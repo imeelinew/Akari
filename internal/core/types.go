@@ -31,6 +31,6 @@ type Config struct {
 		ExternalDirs []string `toml:"external_dirs"`
 	} `toml:"storage"`
 	Player struct {
-		MPV string `toml:"mpv"`
+		SpatialAudio bool `toml:"spatial_audio"`
 	} `toml:"player"`
 }

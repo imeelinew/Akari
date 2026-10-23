@@ -111,9 +111,6 @@ func New(cfg core.Config) (*Library, error) {
 		return nil, fmt.Errorf("resolve music directory: %w", err)
 	}
 	cfg.Storage.MusicDir = musicDir
-	if strings.TrimSpace(cfg.Player.MPV) == "" {
-		cfg.Player.MPV = defaultMPV
-	}
 	externalDirs := append([]string(nil), cfg.Storage.ExternalDirs...)
 	for i, dir := range externalDirs {
 		externalDirs[i] = expandHome(dir, home)

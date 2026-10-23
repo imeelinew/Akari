@@ -25,7 +25,7 @@ func run() error {
 			fmt.Println("Akari " + version)
 			return nil
 		case "--help", "-h":
-			fmt.Println("Akari\n\nUsage: akari\nConfig: ~/.config/akari/config.toml\nRequires: mpv")
+			fmt.Println("Akari\n\nUsage: akari\nConfig: ~/.config/akari/config.toml")
 			return nil
 		default:
 			return fmt.Errorf("unknown option: %s", os.Args[1])
@@ -46,7 +46,7 @@ func run() error {
 		return err
 	}
 	defer lib.Close()
-	p, err := player.New(cfg.Player.MPV)
+	p, err := player.New(cfg.Player.SpatialAudio)
 	if err != nil {
 		return err
 	}

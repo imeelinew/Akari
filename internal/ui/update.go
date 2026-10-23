@@ -316,6 +316,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "up", "down", "j", "k", "pgup", "pgdown", "home", "end", "g", "G":
 			m.confirm = ""
+			offset := m.view.YOffset()
 			switch msg.String() {
 			case "home", "g":
 				m.list.Select(0)
@@ -328,6 +329,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.syncView()
 			m.reveal()
+			cmds = append(cmds, m.repaintAfterViewportScroll(offset))
 		}
 	case tea.MouseWheelMsg:
 		if m.volumeAt(msg.X, msg.Y) {
@@ -339,11 +341,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		if msg.Y >= 4 && msg.Y < 4+m.listH && msg.X < m.left {
+			offset := m.view.YOffset()
 			if msg.Button == tea.MouseWheelUp {
 				m.view.ScrollUp(2)
 			} else if msg.Button == tea.MouseWheelDown {
 				m.view.ScrollDown(2)
 			}
+			cmds = append(cmds, m.repaintAfterViewportScroll(offset))
 		}
 	case tea.MouseClickMsg:
 		if msg.Button == tea.MouseLeft {

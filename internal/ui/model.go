@@ -305,6 +305,16 @@ func (m *Model) reveal() {
 		m.view.SetYOffset(line + 2 - m.listH + margin)
 	}
 }
+
+// Kitty graphics scroll with the terminal. Re-place the artwork whenever the
+// list viewport moves so the cover stays anchored to the right panel.
+func (m *Model) repaintAfterViewportScroll(offset int) tea.Cmd {
+	if m.view.YOffset() == offset {
+		return nil
+	}
+	return m.paintLater()
+}
+
 func (m *Model) selectedSong() *core.Song {
 	e, ok := m.list.SelectedItem().(entry)
 	if ok {

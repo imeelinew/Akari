@@ -12,8 +12,6 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-const defaultMPV = "mpv"
-
 // LoadConfig loads Akari's TOML configuration, creating a default file when
 // one does not exist. It returns the path that was read or created.
 func LoadConfig() (core.Config, string, error) {
@@ -58,9 +56,6 @@ func LoadConfig() (core.Config, string, error) {
 			cfg.Storage.MusicDir = filepath.Join(filepath.Dir(configPath), cfg.Storage.MusicDir)
 		}
 	}
-	if strings.TrimSpace(cfg.Player.MPV) == "" {
-		cfg.Player.MPV = defaultMPV
-	}
 	for i, dir := range cfg.Storage.ExternalDirs {
 		cfg.Storage.ExternalDirs[i] = expandHome(dir, home)
 		if !filepath.IsAbs(cfg.Storage.ExternalDirs[i]) {
@@ -74,7 +69,7 @@ func LoadConfig() (core.Config, string, error) {
 func defaultConfig(home string) core.Config {
 	var cfg core.Config
 	cfg.Storage.MusicDir = defaultMusicDir(home)
-	cfg.Player.MPV = defaultMPV
+	cfg.Player.SpatialAudio = true
 	cfg.Storage.ExternalDirs = []string{}
 	return cfg
 }
