@@ -83,25 +83,25 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			cmds = append(cmds, m.paintLater())
 		}
-	case paintMsg:
-		if int(msg) != m.paint {
-			return m, nil
-		}
-		return m, tea.Raw(artworkFrame{m, int(msg)})
 	case uv.KittyGraphicsEvent:
 		if strings.HasPrefix(string(msg.Payload), "ENOENT") {
 			id := uint32(msg.Options.ID)
 			for key, cached := range m.imageIDs {
 				if cached == id {
+					// A persistent terminal failure must not trigger an upload
+					// on every spectrum frame. Focus grants a fresh retry budget.
+					if key == m.artKey && m.artRecovery >= 2 {
+						break
+					}
 					delete(m.imageIDs, key)
 					m.dropImageOrder(key)
 					if key == m.artKey {
 						m.artRecovery++
-						if m.artRecovery > 2 {
-							m.artData = nil
-							m.artStatus = "Artwork unavailable"
+						// Keep the decoded cover: a terminal cache miss is not a
+						// failed artwork load. Bound retries until the next focus.
+						if m.artRecovery <= 2 {
+							cmds = append(cmds, m.paintLater())
 						}
-						cmds = append(cmds, m.paintLater())
 					}
 					break
 				}

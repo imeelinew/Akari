@@ -82,6 +82,8 @@ func NewView(s string) View {
 // View represents a terminal view that can be composed of multiple layers.
 // It can also contain a cursor that will be rendered on top of the layers.
 type View struct {
+	// Image is an optional terminal image composed after the text frame.
+	Image *ImageLayer
 	// Content is the screen content of the view. It holds styled strings that
 	// will be rendered to the terminal when the view is rendered.
 	//

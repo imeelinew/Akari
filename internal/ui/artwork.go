@@ -65,66 +65,44 @@ func (m *Model) artwork() tea.Cmd {
 	})
 }
 
+// paintLater invalidates the image layer; the renderer composes it after text.
 func (m *Model) paintLater() tea.Cmd {
 	m.paint++
-	generation := m.paint
-	return tea.Tick(30*time.Millisecond, func(time.Time) tea.Msg { return paintMsg(generation) })
+	return nil
 }
 
-// Bubble Tea formats Raw payloads on its event loop, just before writing them.
-// Delay both sequence construction and terminal-cache bookkeeping until then:
-// a queued paint for an older selection must not hide a newer image or claim
-// an upload that was never written.
-type artworkFrame struct {
-	model      *Model
-	generation int
+type imageUpload struct {
+	data                    []byte
+	id                      uint32
+	col, row, width, height int
 }
 
-func (f artworkFrame) String() string {
-	if f.generation != f.model.paint {
-		return ""
-	}
-	return f.model.renderArtwork()
+func (u imageUpload) String() string {
+	return artwork.Render(u.data, u.id, u.col, u.row, u.width, u.height)
 }
 
-func (m *Model) renderArtwork() string {
-	visible := graphicsEnabled(m) && m.artKey != "" && m.width >= 76 && m.height >= 16
-	if !visible {
-		seq := artwork.Delete(m.artID)
-		m.artID = 0
-		return seq
+func (m *Model) imageLayer() *tea.ImageLayer {
+	if !graphicsEnabled(m) || m.artKey == "" || m.width < 76 || m.height < 16 {
+		return nil
 	}
 	col, row, w, h := m.imageBounds()
 	if w < 2 || h < 2 {
-		return ""
+		return nil
 	}
-	id, uploaded := m.imageIDs[m.artKey]
-	seq := ""
-	if m.artID != 0 && m.artID != id {
-		seq += artwork.Delete(m.artID)
-	}
-	if !uploaded {
+	id, known := m.imageIDs[m.artKey]
+	if !known {
 		if len(m.imageOrder) >= 32 {
 			oldest := m.imageOrder[0]
-			seq += artwork.Forget(m.imageIDs[oldest])
 			delete(m.imageIDs, oldest)
-			m.dropImageOrder(oldest)
+			m.imageOrder = m.imageOrder[1:]
 		}
 		m.imageNext++
 		id = m.imageNext
-		upload := artwork.Render(m.artData, id, col, row, w, h)
-		if upload == "" {
-			return seq
-		}
-		seq += upload
 		m.imageIDs[m.artKey] = id
-	} else {
-		seq += artwork.Place(id, col, row, w, h)
 	}
 	m.dropImageOrder(m.artKey)
 	m.imageOrder = append(m.imageOrder, m.artKey)
-	m.artID = id
-	return seq
+	return &tea.ImageLayer{ID: id, Revision: uint64(m.paint), Upload: imageUpload{m.artData, id, col, row, w, h}, Place: artwork.Place(id, col, row, w, h), Hide: artwork.Delete(id), Forget: artwork.Release(id)}
 }
 
 func (m *Model) dropImageOrder(key string) {

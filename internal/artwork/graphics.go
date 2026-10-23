@@ -151,3 +151,11 @@ func Forget(imageID uint32) string {
 	graphicsState.Unlock()
 	return fmt.Sprintf("\x1b_Ga=d,d=I,i=%d,q=2\x1b\\", imageID)
 }
+
+// Release constructs a data eviction command without changing bookkeeping.
+func Release(imageID uint32) string {
+	if imageID == 0 {
+		return ""
+	}
+	return fmt.Sprintf("\x1b_Ga=d,d=I,i=%d,q=2\x1b\\", imageID)
+}

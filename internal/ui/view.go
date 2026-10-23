@@ -66,6 +66,7 @@ func (m *Model) View() tea.View {
 		v.SetContent(ansi.Truncate("Akari · resize to 40 × 16 · q quit", m.width, ""))
 		return v
 	}
+	v.Image = m.imageLayer()
 	muted := m.muted()
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Bold(true)
 	tabs := []string{"Albums", "Downloaded", "Queue", "Transfers"}

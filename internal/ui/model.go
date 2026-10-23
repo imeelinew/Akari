@@ -80,7 +80,6 @@ type artMsg struct {
 	err     error
 }
 type tickMsg time.Time
-type paintMsg int
 type actionMsg struct{ err error }
 
 type Model struct {
@@ -120,7 +119,6 @@ type Model struct {
 	history                           []int
 	artKey                            string
 	artData                           []byte
-	artID                             uint32
 	imageIDs                          map[string]uint32
 	imageNext                         uint32
 	paint                             int

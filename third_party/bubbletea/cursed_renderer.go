@@ -16,6 +16,8 @@ import (
 )
 
 type cursedRenderer struct {
+	images        map[uint32]string
+	imageOrder    []uint32
 	w             io.Writer
 	buf           bytes.Buffer // updates buffer to be flushed to [w]
 	scr           *uv.TerminalRenderer
@@ -300,6 +302,7 @@ func (s *cursedRenderer) flush(closing bool) error {
 	defer s.mu.Unlock()
 
 	view := s.view
+	imageCleared := s.starting || s.pendingErase || s.lastView == nil || (s.lastView != nil && s.lastView.AltScreen != view.AltScreen)
 	frameArea := uv.Rect(0, 0, s.width, s.height)
 	if len(view.Content) == 0 {
 		// If the component is nil, we should clear the screen buffer.
@@ -335,6 +338,7 @@ func (s *cursedRenderer) flush(closing bool) error {
 	s.pendingErase = false
 
 	if frameArea != s.cellbuf.Bounds() {
+		imageCleared = true
 		s.scr.Erase() // Force a full redraw to avoid artifacts.
 
 		// We need to reset the touched lines buffer to match the new height.
@@ -546,6 +550,9 @@ func (s *cursedRenderer) flush(closing bool) error {
 	if err := s.scr.Flush(); err != nil {
 		return fmt.Errorf("bubbletea: error flushing screen writer: %w", err)
 	}
+
+	// Compose graphics only after all text erases and writes.
+	s.buf.WriteString(s.imageCommands(&view, imageCleared))
 
 	// Check if we have any render updates to flush.
 	hasUpdates := s.buf.Len() > 0
@@ -894,7 +901,7 @@ func viewEquals(a, b *View) bool {
 		return false
 	}
 
-	if a.Content != b.Content ||
+	if !imageEquals(a.Image, b.Image) || a.Content != b.Content ||
 		a.AltScreen != b.AltScreen ||
 		a.DisableBracketedPasteMode != b.DisableBracketedPasteMode ||
 		a.ReportFocus != b.ReportFocus ||
