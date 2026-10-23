@@ -1,16 +1,11 @@
 package ui
 
 import (
-	"akari/internal/artwork"
-	"bytes"
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"fmt"
 	"github.com/charmbracelet/x/ansi"
-	"golang.org/x/sys/unix"
-	"image/png"
-	"os"
 	"strings"
 )
 
@@ -37,24 +32,8 @@ func (m *Model) muted() lipgloss.Style {
 	}
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
 }
-func (m *Model) imageBounds() (int, int, int, int) {
-	w, h := max(1, m.width-m.left-4), max(1, m.bodyH-8-m.spectrumReserve())
-	cw, ch := 1.0, 2.0
-	if ws, err := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ); err == nil && ws.Xpixel > 0 && ws.Ypixel > 0 && ws.Col > 0 && ws.Row > 0 {
-		cw = float64(ws.Xpixel) / float64(ws.Col)
-		ch = float64(ws.Ypixel) / float64(ws.Row)
-	}
-	if cfg, err := png.DecodeConfig(bytes.NewReader(m.artData)); err == nil {
-		ratio := float64(cfg.Width) / float64(cfg.Height) * ch / cw
-		cols := min(w, max(1, int(float64(h)*ratio)))
-		rows := min(h, max(1, int(float64(cols)/ratio)))
-		return m.left + 3 + (w-cols)/2, 5 + (h-rows)/2, cols, rows
-	}
-	return m.left + 3, 5, w, h
-}
-
 func (m *Model) View() tea.View {
-	if !m.focused && m.frame.ready {
+	if !m.focused && m.frame.ready && !m.frame.bodyDirty {
 		return m.frame.last
 	}
 	v := tea.NewView("")
@@ -71,39 +50,23 @@ func (m *Model) View() tea.View {
 	}
 	if m.frame.bodyDirty || m.frame.lines == nil {
 		m.renderPanels()
-		m.frame.image = m.imageLayer()
-		m.frame.imageRevision = m.paint
-	} else if m.frame.imageRevision != m.paint {
-		m.frame.image = m.imageLayer()
-		m.frame.imageRevision = m.paint
 	}
-	v.Image = m.frame.image
 	if m.frame.footerDirty || m.frame.footer == nil {
 		m.renderFooter()
 	}
 	lines := append([]string(nil), m.frame.lines...)
-	if row := m.frame.spectrumRow; row >= 0 {
-		for i, line := range m.spectrumLines(m.width - m.left - 4) {
-			if row+i < len(lines) {
-				lines[row+i] = m.frame.spectrumPrefix[i] + line + m.frame.spectrumSuffix[i]
-			}
-		}
-	}
 	lines = append(lines, m.frame.footer...)
 	if len(lines) > m.height {
 		lines = lines[:m.height]
 	}
 	v.SetContent(strings.Join(lines, "\n"))
-	v.Rows = lines
 	m.frame.last = v
 	m.frame.ready = true
 	return v
 }
 
 func (m *Model) renderPanels() {
-	m.frame.spectrumRow = -1
 	muted := m.muted()
-	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Bold(true)
 	tabs := []string{"Albums", "Downloaded", "Queue", "Transfers"}
 	for i := range tabs {
 		tabs[i] = " " + tabs[i] + " "
@@ -145,50 +108,8 @@ func (m *Model) renderPanels() {
 	panel := lipgloss.NewStyle().Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("240")).Padding(0, 1)
 	left := panel.Width(max(1, m.left)).Height(max(1, m.bodyH)).Render(content)
 	body := left
-	if m.width >= 76 {
-		w := m.width - m.left - 4
-		h := m.bodyH - 2
-		artBody := ""
-		if a := m.selectedAlbum(); a != nil {
-			artBody = accent.Render(ansi.Truncate(clean(a.Title), w, "…")) + "\n" + muted.Render(ansi.Truncate(clean(a.Artist), w, "…"))
-			lines := max(1, h-5-m.spectrumReserve())
-			placeholder := ""
-			if !graphicsEnabled(m) {
-				placeholder = m.artStatus
-				if placeholder == "" {
-					placeholder = "No artwork"
-				}
-			}
-			artBody += "\n" + lipgloss.Place(w, lines, lipgloss.Center, lipgloss.Center, muted.Render(placeholder))
-			detail := a.Genre
-			if a.Year > 0 {
-				if detail != "" {
-					detail += " · "
-				}
-				detail += fmt.Sprint(a.Year)
-			}
-			artBody += "\n" + muted.Render(ansi.Truncate(clean(detail), w, "…"))
-			if m.spectrumHeight() > 0 {
-				m.frame.spectrumRow = lipgloss.Height(artBody) + 3
-				artBody += "\n\n" + strings.Repeat(strings.Repeat(" ", w)+"\n", m.spectrumHeight()-1) + strings.Repeat(" ", w)
-			}
-		} else {
-			artBody = lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, muted.Render("Select an album"))
-		}
-		right := panel.Width(max(1, m.width-m.left)).Height(max(1, m.bodyH)).Render(artBody)
-		body = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
-	}
 
 	m.frame.lines = strings.Split(ansi.Truncate(top, m.width, "")+"\n"+body, "\n")
-	m.frame.spectrumPrefix = nil
-	m.frame.spectrumSuffix = nil
-	if row := m.frame.spectrumRow; row >= 0 {
-		for i := 0; i < m.spectrumHeight() && row+i < len(m.frame.lines); i++ {
-			line := m.frame.lines[row+i]
-			m.frame.spectrumPrefix = append(m.frame.spectrumPrefix, ansi.Cut(line, 0, m.left+2))
-			m.frame.spectrumSuffix = append(m.frame.spectrumSuffix, ansi.Cut(line, m.width-2, m.width))
-		}
-	}
 	m.frame.bodyDirty = false
 }
 
@@ -214,8 +135,6 @@ func (m *Model) renderFooter() {
 	m.frame.footer = strings.Split(strings.Join([]string{player, ansi.Truncate(progress, m.width, ""), ansi.Truncate(controls, m.width, ""), muted.Render(ansi.Truncate(" "+notice, m.width, "…")), footer}, "\n"), "\n")
 	m.frame.footerDirty = false
 }
-
-func graphicsEnabled(m *Model) bool { return artwork.Supported() && len(m.artData) > 0 && !m.showHelp }
 
 type control struct {
 	start, end int

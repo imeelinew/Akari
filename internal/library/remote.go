@@ -143,7 +143,6 @@ func (l *Library) fetchAlbums(ctx context.Context) ([]cachedAlbum, error) {
 				Artist:     item.Artist,
 				Genre:      strings.TrimSpace(item.Genre),
 				Year:       intValue(item.Year),
-				CoverArtID: item.CoverArt,
 				LastPlayed: parsePlayed(item.Played.Date),
 			})
 		}
@@ -180,10 +179,6 @@ func (l *Library) fetchSongs(ctx context.Context, albumID string) ([]cachedSong,
 		if albumTitle == "" {
 			albumTitle = detail.Name
 		}
-		coverArt := detail.CoverArt
-		if coverArt == "" {
-			coverArt = item.CoverArt
-		}
 		songs = append(songs, cachedSong{
 			ID:          item.ID,
 			Title:       item.Title,
@@ -193,25 +188,20 @@ func (l *Library) fetchSongs(ctx context.Context, albumID string) ([]cachedSong,
 			Duration:    floatValue(item.Duration),
 			TrackNumber: intValue(item.Track),
 			DiscNumber:  intValue(item.DiscNumber),
-			CoverArtID:  coverArt,
 		})
 		artists = append(artists, item.Artist)
 	}
 
 	album := &cachedAlbum{
-		ID:         albumID,
-		Title:      detail.Name,
-		Artist:     firstNonEmpty(artists),
-		CoverArtID: detail.CoverArt,
+		ID:     albumID,
+		Title:  detail.Name,
+		Artist: firstNonEmpty(artists),
 	}
 	if album.Title == "" && len(songs) > 0 {
 		album.Title = songs[0].AlbumTitle
 	}
 	if album.Artist == "" && len(songs) > 0 {
 		album.Artist = songs[0].Artist
-	}
-	if album.CoverArtID == "" && len(songs) > 0 {
-		album.CoverArtID = songs[0].CoverArtID
 	}
 	return songs, album, nil
 }
@@ -326,20 +316,6 @@ func (l *Library) endpoint(action string, values map[string]string) (string, err
 	}
 	base.RawQuery = query.Encode()
 	return base.String(), nil
-}
-
-func (l *Library) artworkURL(coverArtID string) string {
-	if coverArtID == "" {
-		return ""
-	}
-	value, err := l.endpoint("getCoverArt", map[string]string{
-		"id":   coverArtID,
-		"size": "600",
-	})
-	if err != nil {
-		return ""
-	}
-	return value
 }
 
 func parsePlayed(value string) float64 {

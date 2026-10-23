@@ -16,15 +16,13 @@ const maxManifestSize = 64 << 20
 type externalCatalog struct {
 	songs        map[string]string
 	songMetadata map[string]core.Song
-	artwork      map[string]string
 	albums       []core.Album
 }
 
 type yoruneManifest struct {
-	Version                   int                   `json:"version"`
-	FilenamesBySongID         map[string]string     `json:"filenamesBySongID"`
-	SongsBySongID             map[string]yoruneSong `json:"songsBySongID"`
-	ArtworkFilenamesByAlbumID map[string]string     `json:"artworkFilenamesByAlbumID"`
+	Version           int                   `json:"version"`
+	FilenamesBySongID map[string]string     `json:"filenamesBySongID"`
+	SongsBySongID     map[string]yoruneSong `json:"songsBySongID"`
 }
 
 type yoruneSong struct {
@@ -42,7 +40,6 @@ func (l *Library) reloadExternal() error {
 	catalog := externalCatalog{
 		songs:        make(map[string]string),
 		songMetadata: make(map[string]core.Song),
-		artwork:      make(map[string]string),
 	}
 	for _, configured := range l.config.Storage.ExternalDirs {
 		root := strings.TrimSpace(configured)
@@ -151,17 +148,6 @@ func (l *Library) loadYoruneManifest(directory string, data []byte, catalog *ext
 		}
 	}
 
-	for albumID, filename := range manifest.ArtworkFilenamesByAlbumID {
-		if albumID == "" || !safeFilename(filename) {
-			continue
-		}
-		path := resolveExternalFile(directory, filename)
-		if path != "" {
-			if _, exists := catalog.artwork[albumID]; !exists {
-				catalog.artwork[albumID] = path
-			}
-		}
-	}
 }
 
 func (l *Library) loadExternalOwnIndex(directory string, data []byte, catalog *externalCatalog) {
@@ -187,18 +173,10 @@ func (l *Library) loadExternalOwnIndex(directory string, data []byte, catalog *e
 		if song.Title == "" {
 			song.Title = songID
 		}
-		song.ArtworkURL = ""
 		if _, exists := catalog.songMetadata[songID]; !exists {
 			catalog.songMetadata[songID] = song
 		}
-		if record.ArtworkFilename != "" && safeFilename(record.ArtworkFilename) {
-			artwork := resolveExternalFile(directory, record.ArtworkFilename)
-			if artwork != "" {
-				if _, exists := catalog.artwork[song.AlbumID]; !exists {
-					catalog.artwork[song.AlbumID] = artwork
-				}
-			}
-		}
+
 	}
 }
 

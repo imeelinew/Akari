@@ -36,10 +36,6 @@ func writeState(dir string, s playbackState) error {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
 	}
-	s.Queue = append([]core.Song(nil), s.Queue...)
-	for i := range s.Queue {
-		s.Queue[i].ArtworkURL = ""
-	}
 	b, err := json.Marshal(s)
 	if err != nil {
 		return err

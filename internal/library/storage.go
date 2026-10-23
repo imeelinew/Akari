@@ -1,7 +1,6 @@
 package library
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -46,23 +45,6 @@ func (l *Library) SaveDownload(song core.Song, tempPath, extension string) error
 	l.writeMu.Lock()
 	defer l.writeMu.Unlock()
 
-	l.mu.RLock()
-	artworkFilename := artworkFilenameForAlbum(l.ownRecords, song.AlbumID, l.audioDir)
-	externalArtwork := ""
-	if artworkFilename == "" {
-		externalArtwork = l.external.artwork[song.AlbumID]
-	}
-	l.mu.RUnlock()
-
-	artworkCreated := false
-	if artworkFilename == "" {
-		if externalArtwork != "" {
-			artworkFilename, artworkCreated = persistArtworkFile(l.audioDir, song.AlbumID, externalArtwork)
-		} else if cached := l.cachedArtworkPath(song.AlbumID); cached != "" {
-			artworkFilename, artworkCreated = persistArtworkFile(l.audioDir, song.AlbumID, cached)
-		}
-	}
-
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -83,9 +65,6 @@ func (l *Library) SaveDownload(song core.Song, tempPath, extension string) error
 			l.ownRecords[song.ID] = oldRecord
 		} else {
 			delete(l.ownRecords, song.ID)
-		}
-		if artworkCreated && artworkFilename != "" {
-			_ = os.Remove(filepath.Join(l.audioDir, artworkFilename))
 		}
 	}
 
@@ -116,11 +95,9 @@ func (l *Library) SaveDownload(song core.Song, tempPath, extension string) error
 	syncDirectory(l.audioDir)
 
 	stored := song
-	stored.ArtworkURL = ""
 	record := ownRecord{
-		Song:            stored,
-		Filename:        filename,
-		ArtworkFilename: artworkFilename,
+		Song:     stored,
+		Filename: filename,
 	}
 	l.ownRecords[song.ID] = record
 	if err := l.persistIndexLocked(); err != nil {
@@ -236,7 +213,6 @@ func (l *Library) DownloadedSongs(albumID string) []core.Song {
 		if !ok || (albumID != "" && song.AlbumID != albumID) {
 			continue
 		}
-		song.ArtworkURL = ""
 		byID[songID] = song
 	}
 	for songID, record := range l.ownRecords {
@@ -247,7 +223,6 @@ func (l *Library) DownloadedSongs(albumID string) []core.Song {
 			continue
 		}
 		song := record.Song
-		song.ArtworkURL = ""
 		byID[songID] = song
 	}
 	songs := make([]core.Song, 0, len(byID))
@@ -264,7 +239,6 @@ func (l *Library) persistIndexLocked() error {
 		SongsBySongID: make(map[string]ownRecord, len(l.ownRecords)),
 	}
 	for songID, record := range l.ownRecords {
-		record.Song.ArtworkURL = ""
 		index.SongsBySongID[songID] = record
 	}
 	data, err := json.Marshal(index)
@@ -311,117 +285,6 @@ func copyDownload(sourcePath, directory string) (string, error) {
 	}
 	committed = true
 	return targetPath, nil
-}
-
-func persistArtworkFile(directory, albumID, sourcePath string) (string, bool) {
-	if albumID == "" {
-		return "", false
-	}
-	source, err := os.Open(sourcePath)
-	if err != nil {
-		return "", false
-	}
-	defer source.Close()
-
-	extension := artworkExtensionFromPath(sourcePath)
-	return writeArtwork(directory, albumID, extension, source)
-}
-
-func writeArtwork(directory, albumID, extension string, source io.Reader) (string, bool) {
-	if albumID == "" {
-		return "", false
-	}
-	if extension == "" {
-		extension = "image"
-	}
-	sum := sha256.Sum256([]byte(albumID))
-	filename := "artwork-" + hex.EncodeToString(sum[:]) + "." + extension
-	finalPath := filepath.Join(directory, filename)
-	if regularFile(finalPath) {
-		return filename, false
-	}
-
-	target, err := os.CreateTemp(directory, ".akari-artwork-*")
-	if err != nil {
-		return "", false
-	}
-	tempPath := target.Name()
-	committed := false
-	defer func() {
-		_ = target.Close()
-		if !committed {
-			_ = os.Remove(tempPath)
-		}
-	}()
-
-	if err := target.Chmod(0o600); err != nil {
-		return "", false
-	}
-	const maxArtworkSize = 20 << 20
-	written, err := io.Copy(target, io.LimitReader(source, maxArtworkSize+1))
-	if err != nil || written > maxArtworkSize {
-		return "", false
-	}
-	if err := target.Sync(); err != nil {
-		return "", false
-	}
-	if err := target.Close(); err != nil {
-		return "", false
-	}
-	if err := os.Rename(tempPath, finalPath); err != nil {
-		return "", false
-	}
-	committed = true
-	syncDirectory(directory)
-	return filename, true
-}
-
-func artworkFilenameForAlbum(records map[string]ownRecord, albumID, audioDir string) string {
-	for _, record := range records {
-		if record.Song.AlbumID != albumID ||
-			!safeFilename(record.ArtworkFilename) {
-			continue
-		}
-		if !regularFile(filepath.Join(audioDir, record.ArtworkFilename)) {
-			continue
-		}
-		return record.ArtworkFilename
-	}
-	return ""
-}
-
-func artworkExtensionFromPath(path string) string {
-	extension := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
-	if extension == "" || len(extension) > 10 {
-		return "image"
-	}
-	for _, char := range extension {
-		if (char < 'a' || char > 'z') &&
-			(char < '0' || char > '9') {
-			return "image"
-		}
-	}
-	return extension
-}
-
-func (l *Library) cachedArtworkPath(albumID string) string {
-	if albumID == "" {
-		return ""
-	}
-	sum := sha256.Sum256([]byte(albumID))
-	stem := hex.EncodeToString(sum[:])
-	artworkDir := filepath.Join(l.cacheDir, "artwork")
-	for _, extension := range []string{"png", "jpg", "jpeg", "webp", "gif", "image"} {
-		path := filepath.Join(artworkDir, stem+"."+extension)
-		if regularFile(path) {
-			return path
-		}
-	}
-	path := filepath.Join(artworkDir, stem)
-	if regularFile(path) {
-		return path
-	}
-	return ""
 }
 
 func backupFile(path string) (string, error) {
@@ -482,51 +345,4 @@ func externalAlbumHasFile(catalog externalCatalog, albumID string) bool {
 		}
 	}
 	return false
-}
-
-// SaveArtwork retains artwork independently of the expendable render cache.
-func (l *Library) SaveArtwork(albumID string, data []byte) error {
-	if albumID == "" || len(data) == 0 {
-		return nil
-	}
-	l.writeMu.Lock()
-	defer l.writeMu.Unlock()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	owns := false
-	for _, r := range l.ownRecords {
-		if r.Song.AlbumID == albumID {
-			owns = true
-			break
-		}
-	}
-	if !owns {
-		return nil
-	}
-	filename := artworkFilenameForAlbum(l.ownRecords, albumID, l.audioDir)
-	if filename != "" {
-		return nil
-	}
-	filename, created := writeArtwork(l.audioDir, albumID, "png", bytes.NewReader(data))
-	if filename == "" {
-		return errors.New("save artwork failed")
-	}
-	old := make(map[string]ownRecord)
-	for id, r := range l.ownRecords {
-		if r.Song.AlbumID == albumID {
-			old[id] = r
-			r.ArtworkFilename = filename
-			l.ownRecords[id] = r
-		}
-	}
-	if err := l.persistIndexLocked(); err != nil {
-		for id, r := range old {
-			l.ownRecords[id] = r
-		}
-		if created {
-			_ = os.Remove(filepath.Join(l.audioDir, filename))
-		}
-		return err
-	}
-	return nil
 }

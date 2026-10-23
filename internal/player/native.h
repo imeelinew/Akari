@@ -25,6 +25,5 @@ void ak_player_volume(void *handle,double volume);
 void ak_player_spatial(void *handle,int enabled);
 void ak_player_stop(void *handle,uint64_t generation);
 AKSnapshot ak_player_snapshot(void *handle);
-void ak_player_spectrum(void *handle,float *levels);
 void ak_player_destroy(void *handle);
 #endif

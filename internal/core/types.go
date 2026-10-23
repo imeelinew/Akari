@@ -6,7 +6,6 @@ type Album struct {
 	Artist     string  `json:"artist"`
 	Genre      string  `json:"genre,omitempty"`
 	Year       int     `json:"year,omitempty"`
-	ArtworkURL string  `json:"artworkURL,omitempty"`
 	LastPlayed float64 `json:"lastPlayed,omitempty"`
 }
 type Song struct {
@@ -18,7 +17,6 @@ type Song struct {
 	Duration    float64 `json:"duration"`
 	TrackNumber int     `json:"trackNumber,omitempty"`
 	DiscNumber  int     `json:"discNumber,omitempty"`
-	ArtworkURL  string  `json:"artworkURL,omitempty"`
 }
 type Config struct {
 	Server struct {

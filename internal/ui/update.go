@@ -5,60 +5,30 @@ import (
 	"akari/internal/player"
 	tea "charm.land/bubbletea/v2"
 	"fmt"
-	uv "github.com/charmbracelet/ultraviolet"
-	"strings"
 	"time"
 )
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if _, ok := msg.(tea.RawMsg); ok {
-		return m, nil
-	}
 	m.frame.footerDirty = true
 	switch msg.(type) {
-	case spectrumMsg:
-		m.frame.footerDirty = false
 	case player.Event, tickMsg:
 	default:
 		m.frame.bodyDirty = true
 	}
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
-	case spectrumMsg:
-		m.spectrumPending = false
-		if !m.focused {
-			return m, nil
-		}
-		var levels [32]float64
-		if !m.paused && !m.buffering && m.spectrumHeight() > 0 {
-			levels = m.player.Spectrum()
-		}
-		for i, v := range levels {
-			if v > m.spectrum[i] {
-				m.spectrum[i] += (v - m.spectrum[i]) * 0.7
-			} else {
-				m.spectrum[i] = max(v, m.spectrum[i]-0.045)
-			}
-		}
-		return m, m.spectrumTick()
-
 	case tea.WindowSizeMsg:
-		m.artRecovery = 0
 		m.width, m.height = msg.Width, msg.Height
 		m.resize()
-		cmds = append(cmds, m.paintLater())
 	case tea.BackgroundColorMsg:
 		m.dark = msg.IsDark()
 		m.theme()
 		m.syncView()
-		cmds = append(cmds, m.paintLater())
 	case tea.BlurMsg:
 		m.focused = false
 		return m, nil
 	case tea.FocusMsg:
 		m.focused = true
-		m.artRecovery = 0
-		cmds = append(cmds, m.paintLater())
 	case albumsMsg:
 		m.loading = false
 		if len(msg.albums) > 0 {
@@ -83,47 +53,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncList()
 			m.reveal()
 		}
-	case artMsg:
-		if msg.request == m.artRequest && msg.key == m.artKey {
-			m.artData = msg.data
-			m.spectrumColors = msg.colors
-			m.artRetryAt = time.Time{}
-			if msg.err != nil {
-				m.artStatus = "Artwork unavailable"
-				m.artAttempts++
-				if m.artAttempts < 3 {
-					m.artRetryAt = time.Now().Add(time.Duration(m.artAttempts) * time.Second)
-				}
-			} else {
-				m.artStatus = ""
-			}
-			cmds = append(cmds, m.paintLater())
-		}
-	case uv.KittyGraphicsEvent:
-		if strings.HasPrefix(string(msg.Payload), "ENOENT") {
-			id := uint32(msg.Options.ID)
-			for key, cached := range m.imageIDs {
-				if cached == id {
-					// A persistent terminal failure must not trigger an upload
-					// on every spectrum frame. Focus grants a fresh retry budget.
-					if key == m.artKey && m.artRecovery >= 2 {
-						break
-					}
-					delete(m.imageIDs, key)
-					m.dropImageOrder(key)
-					if key == m.artKey {
-						m.artRecovery++
-						// Keep the decoded cover: a terminal cache miss is not a
-						// failed artwork load. Bound retries until the next focus.
-						if m.artRecovery <= 2 {
-							cmds = append(cmds, m.paintLater())
-						}
-					}
-					break
-				}
-			}
-		}
-
 	case player.Event:
 		cmds = append(cmds, m.playerEvent())
 		if msg.Generation != 0 && msg.Generation != m.player.Generation() {
@@ -224,7 +153,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			m.showHelp = !m.showHelp
 			m.resize()
-			cmds = append(cmds, m.paintLater())
 		case "/":
 			m.filtering = true
 			cmds = append(cmds, m.search.Focus())
@@ -233,7 +161,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.showHelp {
 				m.showHelp = false
 				m.resize()
-				cmds = append(cmds, m.paintLater())
 			} else if m.search.Value() != "" {
 				m.search.SetValue("")
 				m.syncList()
@@ -390,8 +317,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.click(msg.X, msg.Y))
 		}
 	}
-	cmds = append(cmds, m.artwork())
-	cmds = append(cmds, m.spectrumTick())
 	return m, tea.Batch(cmds...)
 }
 

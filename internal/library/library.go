@@ -77,7 +77,6 @@ type cachedAlbum struct {
 	Artist     string  `json:"artist,omitempty"`
 	Genre      string  `json:"genre,omitempty"`
 	Year       int     `json:"year,omitempty"`
-	CoverArtID string  `json:"coverArtID,omitempty"`
 	LastPlayed float64 `json:"lastPlayed,omitempty"`
 }
 
@@ -90,7 +89,6 @@ type cachedSong struct {
 	Duration    float64 `json:"duration,omitempty"`
 	TrackNumber int     `json:"trackNumber,omitempty"`
 	DiscNumber  int     `json:"discNumber,omitempty"`
-	CoverArtID  string  `json:"coverArtID,omitempty"`
 }
 
 // New constructs a library and loads local metadata and download state.
@@ -290,29 +288,6 @@ func (l *Library) LocalPath(songID string) string {
 	return ""
 }
 
-// ArtworkPath returns a locally stored album artwork path, or an empty string.
-func (l *Library) ArtworkPath(albumID string) string {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-
-	for _, record := range l.ownRecords {
-		if record.Song.AlbumID == albumID && record.ArtworkFilename != "" {
-			path := filepath.Join(l.audioDir, record.ArtworkFilename)
-			if regularFile(path) {
-				return path
-			}
-			break
-		}
-	}
-	if path := l.external.artwork[albumID]; path != "" && regularFile(path) {
-		return path
-	}
-	if path := l.cachedArtworkPath(albumID); path != "" {
-		return path
-	}
-	return ""
-}
-
 // StreamURL returns a token-authenticated Subsonic stream URL.
 func (l *Library) StreamURL(songID string) string {
 	if strings.TrimSpace(songID) == "" {
@@ -419,7 +394,6 @@ func (l *Library) decodeIndex(data []byte) error {
 		if record.Song.ID == "" {
 			record.Song.ID = songID
 		}
-		record.Song.ArtworkURL = ""
 		index.SongsBySongID[songID] = record
 	}
 	l.ownRecords = index.SongsBySongID
@@ -569,7 +543,6 @@ func (l *Library) combinedSongs(albumID string, candidates, cached []cachedSong)
 			continue
 		}
 		song := record.Song
-		song.ArtworkURL = ""
 		byID[songID] = song
 	}
 
@@ -588,7 +561,6 @@ func (l *Library) remoteAlbum(album cachedAlbum) core.Album {
 		Artist:     album.Artist,
 		Genre:      album.Genre,
 		Year:       album.Year,
-		ArtworkURL: l.artworkURL(album.CoverArtID),
 		LastPlayed: album.LastPlayed,
 	}
 }
@@ -603,7 +575,6 @@ func (l *Library) remoteSong(song cachedSong) core.Song {
 		Duration:    song.Duration,
 		TrackNumber: song.TrackNumber,
 		DiscNumber:  song.DiscNumber,
-		ArtworkURL:  l.artworkURL(song.CoverArtID),
 	}
 }
 

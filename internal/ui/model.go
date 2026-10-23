@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"akari/internal/artwork"
 	"akari/internal/core"
 	"akari/internal/library"
 	"akari/internal/player"
@@ -72,48 +71,25 @@ type songsMsg struct {
 	err      error
 	download bool
 }
-type artMsg struct {
-	colors  artwork.Palette
-	request int
-	key     string
-	data    []byte
-	err     error
-}
 type tickMsg time.Time
 type actionMsg struct{ err error }
 
 type frameCache struct {
-	bodyDirty, footerDirty, ready  bool
-	lines, footer                  []string
-	spectrumRow                    int
-	spectrumPrefix, spectrumSuffix []string
-	image                          *tea.ImageLayer
-	imageRevision                  int
-	last                           tea.View
+	bodyDirty, footerDirty, ready bool
+	lines, footer                 []string
+	last                          tea.View
 }
 
 type Model struct {
-	focused         bool
-	spectrumPending bool
-	spectrumPaint   spectrumCache
-	frame           frameCache
-
-	spectrum                          [32]float64
-	spectrumColors                    artwork.Palette
+	focused                           bool
+	frame                             frameCache
 	spatial                           bool
-	artRequest                        int
-	artAttempts                       int
-	artRecovery                       int
-	artRetryAt                        time.Time
-	imageOrder                        []string
-	artCancel                         context.CancelFunc
 	activeSongID                      string
 	ctx                               context.Context
 	cancel                            context.CancelFunc
 	lib                               *library.Library
 	player                            *player.Player
 	transfers                         *transfer.Manager
-	art                               *artwork.Cache
 	list                              list.Model
 	view                              viewport.Model
 	search                            textinput.Model
@@ -132,12 +108,6 @@ type Model struct {
 	paused, buffering, loaded         bool
 	duration                          float64
 	history                           []int
-	artKey                            string
-	artData                           []byte
-	imageIDs                          map[string]uint32
-	imageNext                         uint32
-	paint                             int
-	artStatus                         string
 	lastClick                         time.Time
 	lastClickIndex                    int
 	persistAt                         time.Time
@@ -162,7 +132,7 @@ func New(lib *library.Library, p *player.Player, t *transfer.Manager) *Model {
 	input.Prompt = "/ "
 	input.Placeholder = "Search"
 	input.SetVirtualCursor(true)
-	m := &Model{focused: true, ctx: ctx, cancel: cancel, lib: lib, player: p, transfers: t, art: artwork.New(lib.CacheDir() + "/artwork"), list: l, view: v, search: input, help: help.New(), bar: progress.New(progress.WithoutPercentage()), dark: true, loading: true, paused: true, state: readState(lib.CacheDir()), imageIDs: map[string]uint32{}, imageNext: 410000, lastClickIndex: -1}
+	m := &Model{focused: true, ctx: ctx, cancel: cancel, lib: lib, player: p, transfers: t, list: l, view: v, search: input, help: help.New(), bar: progress.New(progress.WithoutPercentage()), dark: true, loading: true, paused: true, state: readState(lib.CacheDir()), lastClickIndex: -1}
 	if song := m.current(); song != nil {
 		m.duration = song.Duration
 	}
@@ -172,7 +142,7 @@ func New(lib *library.Library, p *player.Player, t *transfer.Manager) *Model {
 	return m
 }
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.loadAlbums(false), tea.RequestBackgroundColor, tick(), m.spectrumTick(), m.playerEvent())
+	return tea.Batch(m.loadAlbums(false), tea.RequestBackgroundColor, tick(), m.playerEvent())
 }
 func tick() tea.Cmd {
 	return tea.Tick(250*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -202,9 +172,6 @@ func (m *Model) theme() {
 }
 func (m *Model) resize() {
 	m.left = m.width
-	if m.width >= 76 {
-		m.left = m.width * 55 / 100
-	}
 	m.help.ShowAll = m.showHelp
 	m.bodyH = max(3, m.height-6-lipgloss.Height(m.help.View(bindings{})))
 	m.listH = max(1, m.bodyH-4)
@@ -343,7 +310,7 @@ func (m *Model) selectedAlbum() *core.Album {
 		return e.album
 	}
 	if ok && e.song != nil {
-		return &core.Album{ID: e.song.AlbumID, Title: e.song.AlbumTitle, Artist: e.song.Artist, ArtworkURL: e.song.ArtworkURL}
+		return &core.Album{ID: e.song.AlbumID, Title: e.song.AlbumTitle, Artist: e.song.Artist}
 	}
 	return nil
 }

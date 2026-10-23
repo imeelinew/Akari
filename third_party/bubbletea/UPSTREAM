@@ -1,9 +1,0 @@
-charm.land/bubbletea/v2 v2.1.0
-https://github.com/charmbracelet/bubbletea
-
-Akari patch: expose an opt-out for terminal-wide scroll optimization.
-Akari patch: compose an optional cached image layer after text in the same frame.
-Full-screen erases invalidate image data; ordinary text updates do not touch it.
-The upstream behavior remains unchanged when these opt-in features are unused.
-
-Akari patch: opt-in caching of independently styled terminal rows.
