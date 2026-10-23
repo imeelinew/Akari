@@ -41,6 +41,7 @@ func (m *Model) artwork() tea.Cmd {
 	m.artRetryAt = time.Time{}
 	if changed {
 		m.artData = nil
+		m.spectrumColors = artwork.Palette{}
 		m.artAttempts = 0
 		m.artRecovery = 0
 	}
@@ -60,7 +61,7 @@ func (m *Model) artwork() tea.Cmd {
 		if err == nil {
 			_ = m.lib.SaveArtwork(key, data)
 		}
-		return artMsg{request: request, key: key, data: data, err: err}
+		return artMsg{request: request, key: key, data: data, colors: artwork.Colors(data), err: err}
 	})
 }
 

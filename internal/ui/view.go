@@ -38,7 +38,7 @@ func (m *Model) muted() lipgloss.Style {
 	return lipgloss.NewStyle().Foreground(lipgloss.Color(color))
 }
 func (m *Model) imageBounds() (int, int, int, int) {
-	w, h := max(1, m.width-m.left-4), max(1, m.bodyH-8)
+	w, h := max(1, m.width-m.left-4), max(1, m.bodyH-8-m.spectrumReserve())
 	cw, ch := 1.0, 2.0
 	if ws, err := unix.IoctlGetWinsize(int(os.Stdout.Fd()), unix.TIOCGWINSZ); err == nil && ws.Xpixel > 0 && ws.Ypixel > 0 && ws.Col > 0 && ws.Row > 0 {
 		cw = float64(ws.Xpixel) / float64(ws.Col)
@@ -115,7 +115,7 @@ func (m *Model) View() tea.View {
 		artBody := ""
 		if a := m.selectedAlbum(); a != nil {
 			artBody = accent.Render(ansi.Truncate(clean(a.Title), w, "…")) + "\n" + muted.Render(ansi.Truncate(clean(a.Artist), w, "…"))
-			lines := max(1, h-5)
+			lines := max(1, h-5-m.spectrumReserve())
 			placeholder := ""
 			if !graphicsEnabled(m) {
 				placeholder = m.artStatus
@@ -132,6 +132,9 @@ func (m *Model) View() tea.View {
 				detail += fmt.Sprint(a.Year)
 			}
 			artBody += "\n" + muted.Render(ansi.Truncate(clean(detail), w, "…"))
+			if m.spectrumHeight() > 0 {
+				artBody += "\n\n" + m.spectrumView(w)
+			}
 		} else {
 			artBody = lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, muted.Render("Select an album"))
 		}

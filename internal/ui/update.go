@@ -16,6 +16,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
+	case spectrumMsg:
+		var levels [32]float64
+		if !m.paused && !m.buffering && m.spectrumHeight() > 0 {
+			levels = m.player.Spectrum()
+		}
+		for i, v := range levels {
+			if v > m.spectrum[i] {
+				m.spectrum[i] += (v - m.spectrum[i]) * 0.7
+			} else {
+				m.spectrum[i] = max(v, m.spectrum[i]-0.045)
+			}
+		}
+		return m, m.spectrumTick()
+
 	case tea.WindowSizeMsg:
 		m.artRecovery = 0
 		m.width, m.height = msg.Width, msg.Height
@@ -56,6 +70,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case artMsg:
 		if msg.request == m.artRequest && msg.key == m.artKey {
 			m.artData = msg.data
+			m.spectrumColors = msg.colors
 			m.artRetryAt = time.Time{}
 			if msg.err != nil {
 				m.artStatus = "Artwork unavailable"

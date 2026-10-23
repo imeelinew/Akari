@@ -4,7 +4,7 @@ package player
 
 /*
 #cgo CFLAGS: -x objective-c -fobjc-arc -fblocks -mmacosx-version-min=11.0
-#cgo LDFLAGS: -framework Foundation -framework AVFoundation -framework CoreMedia
+#cgo LDFLAGS: -framework Foundation -framework AVFoundation -framework CoreMedia -framework MediaToolbox -framework Accelerate
 #include <stdlib.h>
 #include "native.h"
 */
@@ -265,4 +265,20 @@ func (p *Player) poll() {
 			}
 		}
 	}
+}
+
+// Spectrum returns 32 logarithmic frequency bands from the playing audio.
+func (p *Player) Spectrum() [32]float64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var result [32]float64
+	if p.native == nil {
+		return result
+	}
+	var levels [32]C.float
+	C.ak_player_spectrum(p.native, &levels[0])
+	for i, v := range levels {
+		result[i] = float64(v)
+	}
+	return result
 }

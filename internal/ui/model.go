@@ -73,6 +73,7 @@ type songsMsg struct {
 	download bool
 }
 type artMsg struct {
+	colors  artwork.Palette
 	request int
 	key     string
 	data    []byte
@@ -83,6 +84,8 @@ type paintMsg int
 type actionMsg struct{ err error }
 
 type Model struct {
+	spectrum                          [32]float64
+	spectrumColors                    artwork.Palette
 	spatial                           bool
 	artRequest                        int
 	artAttempts                       int
@@ -156,7 +159,7 @@ func New(lib *library.Library, p *player.Player, t *transfer.Manager) *Model {
 	return m
 }
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(m.loadAlbums(false), tea.RequestBackgroundColor, tick(), m.playerEvent())
+	return tea.Batch(m.loadAlbums(false), tea.RequestBackgroundColor, tick(), m.spectrumTick(), m.playerEvent())
 }
 func tick() tea.Cmd {
 	return tea.Tick(250*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
