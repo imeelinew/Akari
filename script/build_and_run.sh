@@ -23,7 +23,9 @@ APP_BINARY="$BUILD_DIR/$APP_NAME"
 
 (
   cd "$ROOT_DIR"
-  CGO_ENABLED=1 go build -o "$APP_BINARY" .
+  cargo build --release --locked --target-dir "$BUILD_DIR/cargo"
+  cp "$BUILD_DIR/cargo/release/$APP_NAME" "$APP_BINARY.next"
+  mv -f "$APP_BINARY.next" "$APP_BINARY"
 )
 
 if [[ "$MODE" == "--build-only" ]]; then

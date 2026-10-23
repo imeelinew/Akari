@@ -1,0 +1,31 @@
+[package]
+name = "akari"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.88"
+description = "A Ratatui music player for macOS, Subsonic and local libraries"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+crossterm = "0.29"
+md5 = "0.7"
+rand = "0.9"
+ratatui = "0.30.2"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+signal-hook = "0.3"
+tempfile = "3"
+tiny_http = "0.12"
+toml = "0.9"
+url = "2"
+unicode-width = "0.2"
+
+[build-dependencies]
+cc = "1"
+
+[profile.release]
+lto = "thin"
+strip = true
