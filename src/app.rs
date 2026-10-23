@@ -1,9 +1,11 @@
 use crate::{
+    artwork::Graphics,
     core::{Album, Config, Song},
     library::Library,
     player::Player,
     state::PlaybackState,
     transfer::Manager,
+    visual::Visuals,
 };
 use anyhow::Result;
 use crossterm::{
@@ -77,6 +79,8 @@ pub struct Regions {
     pub seek: Rect,
     pub controls: Vec<(Rect, KeyCode)>,
     pub volume: Rect,
+    pub cover: Rect,
+    pub spectrum: Rect,
 }
 pub struct App {
     pub lib: Arc<Library>,
@@ -113,6 +117,10 @@ pub struct App {
     last_save: Instant,
     last_click: Option<(usize, Instant)>,
     pub focused: bool,
+    pub visual: Visuals,
+    pub view_revision: u64,
+    pub playback_revision: u64,
+    pub ui_cache: crate::ui::Cache,
 }
 impl App {
     pub fn new(cfg: Config) -> Result<Self> {
@@ -125,6 +133,7 @@ impl App {
         let spatial = player.spatial();
         let transfers = Arc::new(Manager::new(lib.clone())?);
         let (tx, rx) = mpsc::channel();
+        let visual = Visuals::new(lib.clone());
         let mut app = Self {
             lib,
             transfers,
@@ -160,54 +169,155 @@ impl App {
             last_save: Instant::now(),
             last_click: None,
             focused: true,
+            visual,
+            view_revision: 0,
+            playback_revision: 0,
+            ui_cache: crate::ui::Cache::default(),
         };
         app.fetch_albums(false);
         app.sync_entries();
         Ok(app)
     }
     pub fn run(&mut self, terminal: &mut DefaultTerminal, quit: Arc<AtomicBool>) -> Result<()> {
-        struct MouseGuard;
-        impl Drop for MouseGuard {
+        use std::io::Write;
+        struct TerminalGuard(Graphics);
+        impl Drop for TerminalGuard {
             fn drop(&mut self) {
-                let _ = execute!(
-                    std::io::stdout(),
-                    DisableMouseCapture,
-                    event::DisableFocusChange
-                );
+                let mut stdout = std::io::stdout();
+                let _ = stdout.write_all(self.0.clear().as_bytes());
+                let _ = execute!(stdout, DisableMouseCapture, event::DisableFocusChange);
+                let _ = stdout.flush();
             }
         }
-        let _guard = MouseGuard;
+        let mut guard = TerminalGuard(Graphics::new());
         execute!(
             std::io::stdout(),
             EnableMouseCapture,
             event::EnableFocusChange
         )?;
+        let mut cell_pixels = terminal_cell_pixels();
         let mut last_tick = Instant::now();
+        let mut last_frame = Instant::now();
+        let mut dirty = true;
+        let mut last_graphics = None;
         loop {
             if quit.load(Ordering::Relaxed) {
                 break;
             }
+            let revision = self.view_revision;
             self.messages();
+            dirty |= revision != self.view_revision;
             if last_tick.elapsed() >= Duration::from_millis(200) {
                 self.tick();
+                self.playback_revision = self.playback_revision.wrapping_add(1);
                 last_tick = Instant::now();
+                dirty = true;
             }
-            terminal.draw(|f| crate::ui::draw(f, self))?;
-            if event::poll(Duration::from_millis(if self.focused { 50 } else { 200 }))? {
+            self.visual
+                .sync(self.cover_album(), self.state.current().map(song_album));
+            dirty |= self.visual.poll();
+            let animated = self.focused
+                && !self.help
+                && self.regions.spectrum.height > 0
+                && ((!self.paused && !self.buffering && self.loaded) || self.visual.decaying());
+            if animated && last_frame.elapsed() >= Duration::from_millis(33) {
+                let levels = if self.paused || self.buffering {
+                    [0.; 32]
+                } else {
+                    self.player.spectrum()
+                };
+                self.visual.animate(levels);
+                last_frame = Instant::now();
+                dirty = true;
+            }
+            if dirty {
+                terminal.draw(|f| crate::ui::draw(f, self))?;
+                let visible = !self.help && Graphics::supported();
+                let graphics_revision = (
+                    self.visual.revision,
+                    self.regions.cover,
+                    cell_pixels,
+                    visible,
+                );
+                if last_graphics != Some(graphics_revision) {
+                    let cover = &self.visual.cover;
+                    let output = guard.0.update(
+                        cover.album.as_ref().map(|a| a.id.as_str()),
+                        cover.image.as_deref(),
+                        self.regions.cover,
+                        cell_pixels,
+                        visible,
+                    );
+                    if !output.is_empty() {
+                        let mut stdout = std::io::stdout();
+                        stdout.write_all(output.as_bytes())?;
+                        stdout.flush()?;
+                    }
+                    last_graphics = Some(graphics_revision);
+                }
+                dirty = false;
+            }
+            let timeout = if animated {
+                Duration::from_millis(33).saturating_sub(last_frame.elapsed())
+            } else {
+                Duration::from_millis(if self.focused { 50 } else { 200 })
+            };
+            if event::poll(timeout)? {
                 match event::read()? {
                     Event::Key(k) if k.kind != KeyEventKind::Release => {
+                        self.view_revision = self.view_revision.wrapping_add(1);
+                        self.playback_revision = self.playback_revision.wrapping_add(1);
                         if self.key(k) {
                             break;
                         }
+                        dirty = true;
                     }
-                    Event::Mouse(m) => self.mouse(m),
-                    Event::FocusGained => self.focused = true,
-                    Event::FocusLost => self.focused = false,
+                    Event::Mouse(m)
+                        if !matches!(m.kind, MouseEventKind::Moved | MouseEventKind::Up(_)) =>
+                    {
+                        self.mouse(m);
+                        self.view_revision = self.view_revision.wrapping_add(1);
+                        self.playback_revision = self.playback_revision.wrapping_add(1);
+                        dirty = true;
+                    }
+                    Event::FocusGained => {
+                        self.focused = true;
+                        last_graphics = None;
+                        let output = guard.0.recover();
+                        std::io::stdout().write_all(output.as_bytes())?;
+                        dirty = true;
+                    }
+                    Event::FocusLost => {
+                        self.focused = false;
+                    }
+                    Event::Resize(_, _) => {
+                        cell_pixels = terminal_cell_pixels();
+                        // Rex recreates its graphics surface when a pane attaches or resizes.
+                        // Restore only this cover from the image cache after the text frame.
+                        if std::env::var("TERM_PROGRAM")
+                            .is_ok_and(|p| p.eq_ignore_ascii_case("rex"))
+                        {
+                            let output = guard.0.recover();
+                            std::io::stdout().write_all(output.as_bytes())?;
+                        } else {
+                            guard.0.invalidate();
+                        }
+                        last_graphics = None;
+                        self.view_revision = self.view_revision.wrapping_add(1);
+                        self.playback_revision = self.playback_revision.wrapping_add(1);
+                        dirty = true;
+                    }
                     _ => {}
                 }
             }
         }
         Ok(())
+    }
+    pub fn cover_album(&self) -> Option<Album> {
+        self.album.clone().or_else(|| match self.selected()? {
+            Entry::Album(album) => Some(album.clone()),
+            Entry::Song { song, .. } => Some(song_album(song)),
+        })
     }
     pub fn shutdown(&mut self) {
         let _ = self.player.stop();
@@ -332,6 +442,7 @@ impl App {
         }
     }
     pub fn sync_entries(&mut self) {
+        self.view_revision = self.view_revision.wrapping_add(1);
         let selected = self.selected().map(Entry::id);
         let mut entries = vec![];
         if self.page == 2 {
@@ -985,4 +1096,22 @@ pub fn duration(seconds: f64) -> String {
         0
     };
     format!("{}:{:02}", n / 60, n % 60)
+}
+
+fn terminal_cell_pixels() -> (u16, u16) {
+    crossterm::terminal::window_size()
+        .ok()
+        .filter(|w| w.columns > 0 && w.rows > 0 && w.width > 0 && w.height > 0)
+        .map_or((8, 16), |w| {
+            ((w.width / w.columns).max(1), (w.height / w.rows).max(1))
+        })
+}
+fn song_album(song: &Song) -> Album {
+    Album {
+        id: song.album_id.clone(),
+        title: song.album_title.clone(),
+        artist: song.artist.clone(),
+        artwork_url: song.artwork_url.clone(),
+        ..Album::default()
+    }
 }

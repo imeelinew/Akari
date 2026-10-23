@@ -6,7 +6,7 @@ use player::{Player, Snapshot};
 
 fn write_wav(path: &std::path::Path) -> Result<()> {
     const SAMPLE_RATE: u32 = 44_100;
-    const SAMPLE_COUNT: u32 = SAMPLE_RATE * 6 / 5;
+    const SAMPLE_COUNT: u32 = SAMPLE_RATE * 12 / 5;
     const CHANNELS: u16 = 1;
     const BITS_PER_SAMPLE: u16 = 16;
 
@@ -28,7 +28,7 @@ fn write_wav(path: &std::path::Path) -> Result<()> {
     for sample_index in 0..SAMPLE_COUNT {
         let phase =
             std::f64::consts::TAU * 440.0 * f64::from(sample_index) / f64::from(SAMPLE_RATE);
-        let sample = (phase.sin() * 1_600.0) as i16;
+        let sample = (phase.sin() * 24_000.0) as i16;
         wav.extend_from_slice(&sample.to_le_bytes());
     }
 
@@ -54,6 +54,36 @@ fn wait_for_snapshot(
     }
 }
 
+fn spectrum_peak(levels: &[f32; 32]) -> f32 {
+    levels
+        .iter()
+        .copied()
+        .filter(|level| level.is_finite())
+        .fold(0.0, f32::max)
+}
+
+fn assert_silent_spectrum(player: &Player, description: &str) {
+    let spectrum = player.spectrum();
+    assert!(
+        spectrum.iter().all(|level| level.abs() <= f32::EPSILON),
+        "{description} did not clear spectrum: {spectrum:?}"
+    );
+}
+
+fn wait_for_spectrum(player: &Player, description: &str) -> Result<[f32; 32]> {
+    let started = std::time::Instant::now();
+    loop {
+        let spectrum = player.spectrum();
+        if spectrum_peak(&spectrum) > 0.01 {
+            return Ok(spectrum);
+        }
+        if started.elapsed() > std::time::Duration::from_secs(5) {
+            anyhow::bail!("timed out waiting for {description}; last spectrum: {spectrum:?}");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn run_smoke() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let wav_path = directory.path().join("akari-native-smoke.wav");
@@ -68,6 +98,7 @@ fn run_smoke() -> Result<()> {
     assert!(initial.paused);
     assert!(initial.spatial);
     assert!((initial.volume - 70.0).abs() < 0.1);
+    assert_silent_spectrum(&player, "initial state");
 
     player.load(source, false, 0.0)?;
     assert_eq!(player.generation(), 1);
@@ -86,6 +117,18 @@ fn run_smoke() -> Result<()> {
         "native smoke: position advanced to {:.3}s",
         playing.position
     );
+    let spectrum = wait_for_spectrum(&player, "live audio spectrum")?;
+    let peak = spectrum_peak(&spectrum);
+    let peak_band = spectrum
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| left.total_cmp(right))
+        .map_or(0, |(band, _)| band);
+    assert!(
+        peak > 0.01,
+        "spectrum must contain real energy: {spectrum:?}"
+    );
+    println!("native smoke: spectrum peak={peak:.3} at band {peak_band}");
 
     player.pause(true)?;
     let paused = wait_for_snapshot(&player, "pause", |snapshot| snapshot.paused)?;
@@ -96,12 +139,15 @@ fn run_smoke() -> Result<()> {
         "position advanced while paused: {paused:?} -> {paused_after:?}"
     );
     println!("native smoke: paused at {:.3}s", paused_after.position);
+    assert_silent_spectrum(&player, "pause");
+    println!("native smoke: spectrum cleared on pause");
 
     player.seek(0.5, true)?;
     let sought = wait_for_snapshot(&player, "seek", |snapshot| {
         (0.45..0.9).contains(&snapshot.position)
     })?;
     assert!(sought.paused);
+    assert_silent_spectrum(&player, "seek");
     println!("native smoke: seek reached {:.3}s", sought.position);
 
     player.volume(42.0)?;
@@ -118,6 +164,7 @@ fn run_smoke() -> Result<()> {
 
     player.pause(false)?;
     wait_for_snapshot(&player, "resume", |snapshot| !snapshot.paused)?;
+    wait_for_spectrum(&player, "spectrum after resume")?;
 
     player.stop()?;
     assert_eq!(player.generation(), 2);
@@ -127,7 +174,19 @@ fn run_smoke() -> Result<()> {
     assert!(stopped.paused);
     assert_eq!(stopped.position, 0.0);
     assert_eq!(stopped.duration, 0.0);
+    assert_silent_spectrum(&player, "stop");
     println!("native smoke: stopped");
+
+    let mut disposable = Player::new(false)?;
+    disposable.load(source, false, 0.0)?;
+    wait_for_snapshot(&disposable, "disposable player ready", |snapshot| {
+        snapshot.status == 2
+    })?;
+    wait_for_spectrum(&disposable, "disposable player spectrum")?;
+    std::thread::spawn(move || drop(disposable))
+        .join()
+        .map_err(|_| anyhow::anyhow!("non-main-thread player destruction panicked"))?;
+    println!("native smoke: active tap destroyed from a non-main thread");
     Ok(())
 }
 

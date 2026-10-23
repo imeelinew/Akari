@@ -98,6 +98,7 @@ mod ffi {
         pub fn ak_player_spatial(handle: *mut c_void, enabled: c_int);
         pub fn ak_player_stop(handle: *mut c_void, generation: u64);
         pub fn ak_player_snapshot(handle: *mut c_void) -> NativeSnapshot;
+        pub fn ak_player_spectrum(handle: *mut c_void, levels: *mut f32);
         pub fn ak_player_destroy(handle: *mut c_void);
     }
 }
@@ -281,6 +282,21 @@ impl Player {
         let snapshot = unsafe { ffi::ak_player_snapshot(self.native.as_ptr()) };
         snapshot.into_public()
     }
+
+    /// Returns normalized levels for 32 logarithmically spaced frequency bands.
+    ///
+    /// The bridge zeroes the output while audio is paused, stopped, or
+    /// unavailable. Visual smoothing belongs to the caller.
+    pub fn spectrum(&self) -> [f32; 32] {
+        let mut levels = [0.0; 32];
+        // SAFETY: native is live for the lifetime of self and `levels` has
+        // exactly the 32 elements required by the C bridge.
+        unsafe { ffi::ak_player_spectrum(self.native.as_ptr(), levels.as_mut_ptr()) };
+        for level in &mut levels {
+            *level = finite_clamped(f64::from(*level), 0.0, 1.0) as f32;
+        }
+        levels
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -331,6 +347,10 @@ impl Player {
 
     pub fn snapshot(&self) -> Snapshot {
         Snapshot::default()
+    }
+
+    pub fn spectrum(&self) -> [f32; 32] {
+        [0.0; 32]
     }
 }
 

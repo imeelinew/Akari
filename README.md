@@ -70,6 +70,10 @@ Existing Go-version configuration, namespaced download indexes, metadata caches,
 
 Mouse: click to select, double-click to open or play, scroll the viewport without changing the selection, click the progress bar to seek, and click player controls. Scrolling over volume adjusts it. The interface needs at least 40 × 16 terminal cells.
 
+The middle area splits into a library on the left, Kitty-protocol **COVER** artwork above **PULSE** on the right (76 columns or wider). PULSE shows a smoothed 32-band spectrum from the actual audio. Both the spectrum and playback bar take their colors from the playing album, independently of the browsed cover. Scrolling changes only the library viewport; it does not move or retransmit artwork.
+
+Normalized covers use a 64-image memory LRU and a disk cache, with 32 uploaded images retained in the terminal. A single worker coalesces artwork requests. Library rows, playback panels, and spectrum colors stay cached between animation frames; spectrum updates stop while hidden or unfocused.
+
 ## Development
 
 ```sh

@@ -2,6 +2,7 @@ use crate::app::{App, Entry, PAGES, Regions, clean, duration};
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
+    buffer::Buffer,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
@@ -39,7 +40,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .split(area);
     header(frame, app, sections[0]);
-    let content = Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).split(sections[1]);
+    let mut cache = std::mem::take(&mut app.ui_cache);
+    let body = sections[1];
+    let (left, right) = if body.width >= 76 {
+        let panes = Layout::horizontal([Constraint::Percentage(60), Constraint::Percentage(40)])
+            .split(body);
+        (panes[0], panes[1])
+    } else {
+        (body, Rect::default())
+    };
+    let content = Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).split(left);
     let search = if app.filtering {
         format!(" / {}▏", clean(&app.query))
     } else if !app.query.is_empty() {
@@ -51,8 +61,33 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Paragraph::new(search).fg(if app.filtering { ACCENT } else { MUTED }),
         content[0],
     );
-    library(frame, app, content[1]);
-    player(frame, app, sections[2]);
+    app.regions.table = content[1];
+    if !cache.library.restore(frame, content[1], app.view_revision) {
+        library(frame, app, content[1]);
+        cache.library.store(frame, content[1], app.view_revision);
+    }
+    if right.width > 0 {
+        let panes =
+            Layout::vertical([Constraint::Percentage(70), Constraint::Percentage(30)]).split(right);
+        cover(frame, app, panes[0]);
+        pulse(frame, app, panes[1], &mut cache.spectrum);
+    }
+    // The footer and all formatted library rows stay cached between FFT frames.
+    let footer_revision = app
+        .playback_revision
+        .wrapping_add(app.visual.revision.wrapping_mul(31));
+    if cache.footer.restore(frame, sections[2], footer_revision) {
+        app.regions.seek = cache.seek;
+        app.regions.volume = cache.volume;
+        app.regions.controls = cache.controls.clone();
+    } else {
+        player(frame, app, sections[2]);
+        cache.footer.store(frame, sections[2], footer_revision);
+        cache.seek = app.regions.seek;
+        cache.volume = app.regions.volume;
+        cache.controls = app.regions.controls.clone();
+    }
+    app.ui_cache = cache;
     let notice = if app.notice.is_empty() {
         " enter open / play   space pause   / search   ? help   q quit".into()
     } else {
@@ -68,6 +103,144 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     if app.help {
         help(frame, area, app.help_scroll);
+    }
+}
+#[derive(Default)]
+pub struct Cache {
+    library: CachedRegion,
+    footer: CachedRegion,
+    seek: Rect,
+    volume: Rect,
+    controls: Vec<(Rect, KeyCode)>,
+    spectrum: SpectrumCache,
+}
+#[derive(Default)]
+struct CachedRegion {
+    revision: u64,
+    buffer: Option<Buffer>,
+}
+impl CachedRegion {
+    fn restore(&self, frame: &mut Frame, area: Rect, revision: u64) -> bool {
+        let Some(buffer) = &self.buffer else {
+            return false;
+        };
+        if buffer.area != area || self.revision != revision {
+            return false;
+        }
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                frame.buffer_mut()[(x, y)] = buffer[(x, y)].clone();
+            }
+        }
+        true
+    }
+    fn store(&mut self, frame: &mut Frame, area: Rect, revision: u64) {
+        let mut buffer = self
+            .buffer
+            .take()
+            .filter(|b| b.area == area)
+            .unwrap_or_else(|| Buffer::empty(area));
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                buffer[(x, y)] = frame.buffer_mut()[(x, y)].clone();
+            }
+        }
+        self.buffer = Some(buffer);
+        self.revision = revision;
+    }
+}
+#[derive(Default)]
+struct SpectrumCache {
+    palette: Option<crate::artwork::Palette>,
+    colors: Vec<Color>,
+}
+fn cover(frame: &mut Frame, app: &mut App, area: Rect) {
+    let block = panel(" COVER ".into());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let parts = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(inner);
+    app.regions.cover = parts[0];
+    let slot = &app.visual.cover;
+    let metadata = slot.album.as_ref().map_or_else(
+        || vec![Line::from("Choose an album").fg(MUTED)],
+        |a| {
+            vec![
+                Line::from(clean(&a.title)).bold(),
+                Line::from(clean(&a.artist)).fg(MUTED),
+            ]
+        },
+    );
+    frame.render_widget(
+        Paragraph::new(metadata).alignment(Alignment::Center),
+        parts[1],
+    );
+    let message = if slot.loading {
+        "Loading cover…"
+    } else if slot.image.is_none() {
+        "No cover"
+    } else if !crate::artwork::Graphics::supported() {
+        "Kitty graphics unavailable"
+    } else {
+        ""
+    };
+    if !message.is_empty() {
+        frame.render_widget(
+            Paragraph::new(message)
+                .fg(MUTED)
+                .alignment(Alignment::Center),
+            Rect::new(
+                parts[0].x,
+                parts[0].y + parts[0].height / 2,
+                parts[0].width,
+                u16::from(parts[0].height > 0),
+            ),
+        );
+    }
+}
+fn pulse(frame: &mut Frame, app: &mut App, area: Rect, cache: &mut SpectrumCache) {
+    let block = panel(" PULSE ".into());
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    app.regions.spectrum = inner;
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+    let palette = app.visual.palette();
+    if cache.palette != Some(palette) || cache.colors.len() != inner.height as usize {
+        cache.palette = Some(palette);
+        cache.colors = (0..inner.height)
+            .map(|y| {
+                let c = crate::artwork::palette_at(
+                    &palette,
+                    y as f64 / inner.height.saturating_sub(1).max(1) as f64,
+                );
+                Color::Rgb(c[0], c[1], c[2])
+            })
+            .collect();
+    }
+    const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let bars = (inner.width as usize / 3).clamp(1, 32);
+    let width = (inner.width as usize - (bars - 1)) / bars;
+    let used = bars * width + bars - 1;
+    let start = inner.x + (inner.width - used as u16) / 2;
+    for bar in 0..bars {
+        let from = bar * 32 / bars;
+        let to = ((bar + 1) * 32 / bars).max(from + 1);
+        let level = app.visual.levels[from..to]
+            .iter()
+            .copied()
+            .fold(0f32, f32::max);
+        let units = (level * inner.height as f32 * 8.).round() as usize;
+        for y in 0..inner.height {
+            let fill = units
+                .saturating_sub((inner.height - y - 1) as usize * 8)
+                .min(8);
+            for x in 0..width {
+                frame.buffer_mut()[(start + (bar * (width + 1) + x) as u16, inner.y + y)]
+                    .set_char(BLOCKS[fill])
+                    .set_fg(cache.colors[y as usize]);
+            }
+        }
     }
 }
 fn header(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -245,6 +418,8 @@ fn render_library_table(
     *state.selected_mut() = selected;
 }
 fn player(frame: &mut Frame, app: &mut App, area: Rect) {
+    let rgb = crate::artwork::palette_at(&app.visual.palette(), 0.5);
+    let accent = Color::Rgb(rgb[0], rgb[1], rgb[2]);
     let mode = if app.buffering {
         "BUFFERING"
     } else if app.paused {
@@ -286,7 +461,7 @@ fn player(frame: &mut Frame, app: &mut App, area: Rect) {
         Gauge::default()
             .ratio(ratio)
             .label("")
-            .gauge_style(Style::new().fg(ACCENT).bg(Color::DarkGray))
+            .gauge_style(Style::new().fg(accent).bg(Color::DarkGray))
             .use_unicode(true),
         progress[1],
     );
@@ -344,7 +519,7 @@ fn player(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), rows[2]);
     let volume = format!("[-] Vol {:3.0}% [+]", app.state.volume);
-    frame.render_widget(Paragraph::new(volume).fg(ACCENT), rows[3]);
+    frame.render_widget(Paragraph::new(volume).fg(accent), rows[3]);
     app.regions.volume = Rect::new(rows[3].x, rows[3].y, 18.min(rows[3].width), 1);
     app.regions
         .controls

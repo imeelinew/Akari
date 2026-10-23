@@ -2058,6 +2058,7 @@ mod tests {
             duration: 120.0,
             track_number: 1,
             disc_number: 1,
+            artwork_url: String::new(),
         }
     }
 

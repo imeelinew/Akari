@@ -13,7 +13,7 @@ use std::{
     collections::{HashMap, HashSet},
     env,
     fs::{self, File},
-    io::{Read, Write},
+    io::{Cursor, Read, Write},
     path::{Path, PathBuf},
     sync::Mutex,
     time::Duration,
@@ -26,6 +26,8 @@ const METADATA_VERSION: i32 = 1;
 const SUBSONIC_PAGE_SIZE: usize = 500;
 const MAX_RESPONSE_SIZE: u64 = 64 << 20;
 const MAX_MANIFEST_SIZE: u64 = 64 << 20;
+const MAX_ARTWORK_SIZE: u64 = 20 << 20;
+const MAX_SAVED_ARTWORK_SIZE: usize = 4 << 20;
 
 #[derive(Default)]
 struct LibraryState {
@@ -40,6 +42,7 @@ struct LibraryState {
 struct ExternalCatalog {
     songs: HashMap<String, PathBuf>,
     song_metadata: HashMap<String, Song>,
+    artwork: HashMap<String, PathBuf>,
     albums: Vec<Album>,
 }
 
@@ -95,6 +98,12 @@ struct CachedAlbum {
     genre: String,
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     year: i32,
+    #[serde(
+        default,
+        rename = "coverArtID",
+        skip_serializing_if = "String::is_empty"
+    )]
+    cover_art_id: String,
     #[serde(default, rename = "lastPlayed", skip_serializing_if = "is_zero_f64")]
     last_played: f64,
 }
@@ -121,6 +130,12 @@ struct CachedSong {
     track_number: i32,
     #[serde(default, rename = "discNumber", skip_serializing_if = "is_zero_i32")]
     disc_number: i32,
+    #[serde(
+        default,
+        rename = "coverArtID",
+        skip_serializing_if = "String::is_empty"
+    )]
+    cover_art_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -135,6 +150,12 @@ struct YoruneManifest {
         deserialize_with = "deserialize_or_default"
     )]
     songs_by_song_id: HashMap<String, YoruneSong>,
+    #[serde(
+        default,
+        rename = "artworkFilenamesByAlbumID",
+        deserialize_with = "deserialize_or_default"
+    )]
+    artwork_filenames_by_album_id: HashMap<String, String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -346,6 +367,7 @@ impl Library {
                 id: song.album_id.clone(),
                 title: song.album_title.clone(),
                 artist: song.artist.clone(),
+                artwork_url: String::new(),
                 ..Album::default()
             });
         }
@@ -399,6 +421,68 @@ impl Library {
             .get(song_id)
             .filter(|path| regular_file(path))
             .cloned()
+    }
+
+    /// Returns persistent album artwork, preferring Akari-owned files, then
+    /// read-only external manifests, then the disposable render cache.
+    pub fn artwork_path(&self, album_id: &str) -> Option<PathBuf> {
+        if album_id.trim().is_empty() {
+            return None;
+        }
+        {
+            let state = lock(&self.state);
+            if let Some(filename) =
+                artwork_filename_for_album(&state.own_records, album_id, &self.audio_dir)
+            {
+                return Some(self.audio_dir.join(filename));
+            }
+            if let Some(path) = state
+                .external
+                .artwork
+                .get(album_id)
+                .filter(|path| regular_file(path))
+            {
+                return Some(path.clone());
+            }
+        }
+        self.cached_artwork_path(album_id)
+    }
+
+    /// Resolves artwork for playback consumers. Persistent files take priority;
+    /// remote metadata is used before the Subsonic album-ID fallback.
+    pub fn artwork_source(&self, album_id: &str) -> Option<String> {
+        if album_id.trim().is_empty() {
+            return None;
+        }
+        if let Some(path) = self.artwork_path(album_id) {
+            return Some(path.to_string_lossy().into_owned());
+        }
+
+        let cover_art_id = {
+            let state = lock(&self.state);
+            state
+                .albums
+                .iter()
+                .find(|album| album.id == album_id && !album.cover_art_id.is_empty())
+                .map(|album| album.cover_art_id.clone())
+                .or_else(|| {
+                    state.songs.get(album_id).and_then(|songs| {
+                        songs
+                            .iter()
+                            .find(|song| !song.cover_art_id.is_empty())
+                            .map(|song| song.cover_art_id.clone())
+                    })
+                })
+                .or_else(|| {
+                    state.songs.values().flatten().find_map(|song| {
+                        (song.album_id == album_id && !song.cover_art_id.is_empty())
+                            .then(|| song.cover_art_id.clone())
+                    })
+                })
+        };
+        cover_art_id
+            .and_then(|cover_art_id| self.artwork_url(&cover_art_id))
+            .or_else(|| self.artwork_url(album_id))
     }
 
     /// Builds a token-authenticated Subsonic stream URL.
@@ -469,6 +553,28 @@ impl Library {
         let final_path = self.audio_dir.join(&filename);
 
         let _write_guard = lock(&self.write_lock);
+        let existing_artwork = {
+            let state = lock(&self.state);
+            artwork_filename_for_album(&state.own_records, &song.album_id, &self.audio_dir)
+        };
+        let (artwork_filename, artwork_created) = if existing_artwork.is_some() {
+            (existing_artwork, false)
+        } else {
+            let external_artwork = {
+                let state = lock(&self.state);
+                state
+                    .external
+                    .artwork
+                    .get(&song.album_id)
+                    .filter(|path| regular_file(path))
+                    .cloned()
+            };
+            let source = external_artwork.or_else(|| self.cached_artwork_path(&song.album_id));
+            source
+                .and_then(|path| persist_artwork_file(&self.audio_dir, &song.album_id, &path))
+                .map(|(filename, created)| (Some(filename), created))
+                .unwrap_or((None, false))
+        };
         let mut state = lock(&self.state);
         let old_record = state.own_records.get(&song.id).cloned();
         let mut backups = HashMap::<PathBuf, PathBuf>::new();
@@ -490,6 +596,9 @@ impl Library {
                     }
                     Err(error) => {
                         rollback_file_changes(&final_path, false, &backups);
+                        if artwork_created && let Some(filename) = &artwork_filename {
+                            let _ = fs::remove_file(self.audio_dir.join(filename));
+                        }
                         return Err(error).context("prepare download replacement");
                     }
                 }
@@ -498,20 +607,33 @@ impl Library {
 
         if let Err(error) = staged.persist(&final_path) {
             rollback_file_changes(&final_path, false, &backups);
+            if artwork_created && let Some(filename) = &artwork_filename {
+                let _ = fs::remove_file(self.audio_dir.join(filename));
+            }
             return Err(error.error).context("install downloaded audio");
         }
         sync_directory(&self.audio_dir);
 
+        let mut stored = song.clone();
+        stored.artwork_url.clear();
         state.own_records.insert(
             song.id.clone(),
             OwnRecord {
-                song: song.clone(),
+                song: stored,
                 filename,
-                artwork_filename: String::new(),
+                artwork_filename: artwork_filename.unwrap_or_default(),
             },
         );
         if let Err(error) = self.persist_index_locked(&state) {
             rollback_file_changes(&final_path, true, &backups);
+            if artwork_created
+                && let Some(filename) = &state
+                    .own_records
+                    .get(&song.id)
+                    .map(|record| record.artwork_filename.clone())
+            {
+                let _ = fs::remove_file(self.audio_dir.join(filename));
+            }
             match old_record {
                 Some(record) => {
                     state.own_records.insert(song.id.clone(), record);
@@ -529,6 +651,62 @@ impl Library {
         sync_directory(&self.audio_dir);
         if let Some(parent) = self.index_path.parent() {
             sync_directory(parent);
+        }
+        Ok(())
+    }
+
+    /// Retains PNG artwork independently of the disposable render cache.
+    /// External-only albums stay read-only and are ignored here.
+    pub fn save_artwork(&self, album_id: &str, png: &[u8]) -> Result<()> {
+        if album_id.trim().is_empty() || png.is_empty() {
+            return Ok(());
+        }
+        if png.len() > MAX_SAVED_ARTWORK_SIZE {
+            bail!("artwork exceeds {} bytes", MAX_SAVED_ARTWORK_SIZE);
+        }
+
+        let _write_guard = lock(&self.write_lock);
+        let mut state = lock(&self.state);
+        if !state
+            .own_records
+            .values()
+            .any(|record| record.song.album_id == album_id)
+        {
+            return Ok(());
+        }
+        if artwork_filename_for_album(&state.own_records, album_id, &self.audio_dir).is_some() {
+            return Ok(());
+        }
+
+        let (filename, created) = write_artwork(
+            &self.audio_dir,
+            album_id,
+            "png",
+            &mut Cursor::new(png),
+            MAX_SAVED_ARTWORK_SIZE as u64,
+        )
+        .context("save artwork")?;
+        let old_records: HashMap<_, _> = state
+            .own_records
+            .iter()
+            .filter(|(_, record)| record.song.album_id == album_id)
+            .map(|(id, record)| (id.clone(), record.clone()))
+            .collect();
+        for record in state
+            .own_records
+            .values_mut()
+            .filter(|record| record.song.album_id == album_id)
+        {
+            record.artwork_filename = filename.clone();
+        }
+        if let Err(error) = self.persist_index_locked(&state) {
+            for (id, record) in old_records {
+                state.own_records.insert(id, record);
+            }
+            if created {
+                let _ = fs::remove_file(self.audio_dir.join(&filename));
+            }
+            return Err(error);
         }
         Ok(())
     }
@@ -607,6 +785,10 @@ impl Library {
             if record.song.id.is_empty() {
                 record.song.id = song_id.clone();
             }
+            record.song.artwork_url.clear();
+            if !record.artwork_filename.is_empty() && !safe_filename(&record.artwork_filename) {
+                record.artwork_filename.clear();
+            }
             true
         });
         lock(&self.state).own_records = index.songs_by_song_id;
@@ -661,11 +843,37 @@ impl Library {
         write_file_atomic(&self.metadata_path, &data, 0o600).context("write song cache")
     }
 
+    fn album_from_cached(&self, album: &CachedAlbum) -> Album {
+        Album {
+            id: album.id.clone(),
+            title: album.title.clone(),
+            artist: album.artist.clone(),
+            genre: album.genre.clone(),
+            year: album.year,
+            artwork_url: self.artwork_url(&album.cover_art_id).unwrap_or_default(),
+            last_played: album.last_played,
+        }
+    }
+
+    fn song_from_cached(&self, song: &CachedSong) -> Song {
+        Song {
+            id: song.id.clone(),
+            title: song.title.clone(),
+            artist: song.artist.clone(),
+            album_id: song.album_id.clone(),
+            album_title: song.album_title.clone(),
+            duration: song.duration,
+            track_number: song.track_number,
+            disc_number: song.disc_number,
+            artwork_url: self.artwork_url(&song.cover_art_id).unwrap_or_default(),
+        }
+    }
+
     fn combined_albums(&self, candidates: &[CachedAlbum]) -> Vec<Album> {
         let state = lock(&self.state);
         let mut by_id = HashMap::<String, Album>::new();
         for album in candidates {
-            let album = album_from_cached(album);
+            let album = self.album_from_cached(album);
             by_id.insert(album.id.clone(), album);
         }
         for album in &state.external.albums {
@@ -682,6 +890,7 @@ impl Library {
                 id: song.album_id.clone(),
                 title: song.album_title.clone(),
                 artist: song.artist.clone(),
+                artwork_url: String::new(),
                 ..Album::default()
             });
         }
@@ -699,7 +908,7 @@ impl Library {
         let state = lock(&self.state);
         let mut by_id = HashMap::<String, Song>::new();
         for song in candidates.iter().chain(cached) {
-            let song = song_from_cached(song);
+            let song = self.song_from_cached(song);
             by_id.insert(song.id.clone(), song);
         }
         for (song_id, path) in &state.external.songs {
@@ -725,9 +934,13 @@ impl Library {
     }
 
     fn persist_index_locked(&self, state: &LibraryState) -> Result<()> {
+        let mut records = state.own_records.clone();
+        for record in records.values_mut() {
+            record.song.artwork_url.clear();
+        }
         let index = OwnIndex {
             version: INDEX_VERSION,
-            songs_by_song_id: state.own_records.clone(),
+            songs_by_song_id: records,
         };
         let data = serde_json::to_vec(&index).context("encode download index")?;
         write_file_atomic(&self.index_path, &data, 0o600).context("write download index")
@@ -766,6 +979,7 @@ impl Library {
                         artist: album.artist.clone(),
                         genre: album.genre.trim().to_owned(),
                         year: album.year.unwrap_or_default(),
+                        cover_art_id: album.cover_art.clone(),
                         last_played: album
                             .played
                             .as_ref()
@@ -801,6 +1015,11 @@ impl Library {
             } else {
                 item.album
             };
+            let cover_art_id = if detail.cover_art.is_empty() {
+                item.cover_art
+            } else {
+                detail.cover_art.clone()
+            };
             songs.push(CachedSong {
                 id: item.id,
                 title: item.title,
@@ -810,6 +1029,7 @@ impl Library {
                 duration: item.duration.unwrap_or_default(),
                 track_number: item.track.unwrap_or_default(),
                 disc_number: item.disc_number.unwrap_or_default(),
+                cover_art_id,
             });
             artists.push(item.artist);
         }
@@ -823,6 +1043,7 @@ impl Library {
                 .find(|value| !value.is_empty())
                 .unwrap_or_default()
                 .to_owned(),
+            cover_art_id: detail.cover_art,
             ..CachedAlbum::default()
         };
         if album.title.is_empty()
@@ -834,6 +1055,11 @@ impl Library {
             && let Some(song) = songs.first()
         {
             album.artist = song.artist.clone();
+        }
+        if album.cover_art_id.is_empty()
+            && let Some(song) = songs.first()
+        {
+            album.cover_art_id = song.cover_art_id.clone();
         }
         Ok((songs, album))
     }
@@ -903,6 +1129,14 @@ impl Library {
             }
         }
         Ok(endpoint.to_string())
+    }
+
+    fn artwork_url(&self, cover_art_id: &str) -> Option<String> {
+        if cover_art_id.trim().is_empty() {
+            return None;
+        }
+        self.endpoint("getCoverArt", &[("id", cover_art_id), ("size", "600")])
+            .ok()
     }
 }
 
@@ -992,6 +1226,112 @@ fn rollback_file_changes(final_path: &Path, installed: bool, backups: &HashMap<P
     }
 }
 
+fn artwork_filename_for_album(
+    records: &HashMap<String, OwnRecord>,
+    album_id: &str,
+    audio_dir: &Path,
+) -> Option<String> {
+    records.values().find_map(|record| {
+        (record.song.album_id == album_id
+            && safe_filename(&record.artwork_filename)
+            && regular_file(&audio_dir.join(&record.artwork_filename)))
+        .then(|| record.artwork_filename.clone())
+    })
+}
+
+fn persist_artwork_file(
+    directory: &Path,
+    album_id: &str,
+    source_path: &Path,
+) -> Option<(String, bool)> {
+    let mut source = File::open(source_path).ok()?;
+    let extension = artwork_extension_from_path(source_path);
+    write_artwork(
+        directory,
+        album_id,
+        &extension,
+        &mut source,
+        MAX_ARTWORK_SIZE,
+    )
+    .ok()
+}
+
+fn write_artwork(
+    directory: &Path,
+    album_id: &str,
+    extension: &str,
+    source: &mut impl Read,
+    max_size: u64,
+) -> Result<(String, bool)> {
+    if album_id.is_empty() {
+        bail!("album ID is empty");
+    }
+    let extension = if extension.is_empty() {
+        "image"
+    } else {
+        extension
+    };
+    let filename = format!(
+        "artwork-{}.{}",
+        hex_encode(&Sha256::digest(album_id.as_bytes())),
+        extension
+    );
+    let final_path = directory.join(&filename);
+    if regular_file(&final_path) {
+        return Ok((filename, false));
+    }
+
+    let mut target = NamedTempFile::new_in(directory).context("create temporary artwork")?;
+    set_file_mode(target.as_file(), 0o600)?;
+    let written =
+        std::io::copy(&mut source.take(max_size + 1), &mut target).context("copy artwork")?;
+    if written > max_size {
+        bail!("artwork is too large");
+    }
+    target.flush().context("flush artwork")?;
+    target.as_file().sync_all().context("sync artwork")?;
+    target
+        .persist(&final_path)
+        .map_err(|error| error.error)
+        .context("install artwork")?;
+    sync_directory(directory);
+    Ok((filename, true))
+}
+
+fn artwork_extension_from_path(path: &Path) -> String {
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if extension.is_empty()
+        || extension.len() > 10
+        || !extension.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        "image".to_owned()
+    } else {
+        extension
+    }
+}
+
+impl Library {
+    fn cached_artwork_path(&self, album_id: &str) -> Option<PathBuf> {
+        if album_id.is_empty() {
+            return None;
+        }
+        let stem = hex_encode(&Sha256::digest(album_id.as_bytes()));
+        let artwork_dir = self.cache_dir.join("artwork");
+        for extension in ["png", "jpg", "jpeg", "webp", "gif", "image"] {
+            let path = artwork_dir.join(format!("{stem}.{extension}"));
+            if regular_file(&path) {
+                return Some(path);
+            }
+        }
+        let path = artwork_dir.join(stem);
+        regular_file(&path).then_some(path)
+    }
+}
+
 fn normalize_extension(extension: &str, temp_path: &Path) -> Result<String> {
     let mut extension = extension.trim();
     if extension.is_empty() {
@@ -1018,30 +1358,6 @@ fn metadata_snapshot(state: &LibraryState) -> MetadataCache {
         version: METADATA_VERSION,
         albums: state.albums.clone(),
         songs_by_album_id: state.songs.clone(),
-    }
-}
-
-fn album_from_cached(album: &CachedAlbum) -> Album {
-    Album {
-        id: album.id.clone(),
-        title: album.title.clone(),
-        artist: album.artist.clone(),
-        genre: album.genre.clone(),
-        year: album.year,
-        last_played: album.last_played,
-    }
-}
-
-fn song_from_cached(song: &CachedSong) -> Song {
-    Song {
-        id: song.id.clone(),
-        title: song.title.clone(),
-        artist: song.artist.clone(),
-        album_id: song.album_id.clone(),
-        album_title: song.album_title.clone(),
-        duration: song.duration,
-        track_number: song.track_number,
-        disc_number: song.disc_number,
     }
 }
 
@@ -1155,16 +1471,18 @@ fn load_external_directory(directory: &Path, catalog: &mut ExternalCatalog) {
 }
 
 fn load_yorune_manifest(directory: &Path, data: &[u8], catalog: &mut ExternalCatalog) {
-    let (filenames, songs_by_id) = match serde_json::from_slice::<YoruneManifest>(data) {
-        Ok(mut manifest) if manifest.filenames_by_song_id.is_some() => (
-            manifest.filenames_by_song_id.take().unwrap_or_default(),
-            manifest.songs_by_song_id,
-        ),
-        _ => match serde_json::from_slice::<HashMap<String, String>>(data) {
-            Ok(legacy) => (legacy, HashMap::new()),
-            Err(_) => return,
-        },
-    };
+    let (filenames, songs_by_id, artwork_filenames) =
+        match serde_json::from_slice::<YoruneManifest>(data) {
+            Ok(mut manifest) if manifest.filenames_by_song_id.is_some() => (
+                manifest.filenames_by_song_id.take().unwrap_or_default(),
+                manifest.songs_by_song_id,
+                manifest.artwork_filenames_by_album_id,
+            ),
+            _ => match serde_json::from_slice::<HashMap<String, String>>(data) {
+                Ok(legacy) => (legacy, HashMap::new(), HashMap::new()),
+                Err(_) => return,
+            },
+        };
 
     for (song_id, filename) in filenames {
         if song_id.is_empty() || !safe_filename(&filename) {
@@ -1186,6 +1504,7 @@ fn load_yorune_manifest(directory: &Path, data: &[u8], catalog: &mut ExternalCat
             duration: stored.duration,
             track_number: stored.track_number.unwrap_or_default(),
             disc_number: stored.disc_number.unwrap_or_default(),
+            artwork_url: String::new(),
         };
         // Go identifies Yorune entries by the map key and ignores the
         // optional song object's own `id`.
@@ -1194,6 +1513,18 @@ fn load_yorune_manifest(directory: &Path, data: &[u8], catalog: &mut ExternalCat
             song.title = song_id.clone();
         }
         catalog.song_metadata.entry(song_id).or_insert(song);
+    }
+
+    for (album_id, filename) in artwork_filenames {
+        if album_id.is_empty()
+            || !safe_filename(&filename)
+            || catalog.artwork.contains_key(&album_id)
+        {
+            continue;
+        }
+        if let Some(path) = resolve_external_file(directory, &filename) {
+            catalog.artwork.insert(album_id, path);
+        }
     }
 }
 
@@ -1215,10 +1546,19 @@ fn load_external_own_index(directory: &Path, data: &[u8], catalog: &mut External
         if record.song.title.is_empty() {
             record.song.title = song_id.clone();
         }
+        record.song.artwork_url.clear();
         catalog
             .song_metadata
             .entry(song_id.clone())
             .or_insert_with(|| record.song.clone());
+        if !record.song.album_id.is_empty()
+            && !record.artwork_filename.is_empty()
+            && safe_filename(&record.artwork_filename)
+            && !catalog.artwork.contains_key(&record.song.album_id)
+            && let Some(path) = resolve_external_file(directory, &record.artwork_filename)
+        {
+            catalog.artwork.insert(record.song.album_id.clone(), path);
+        }
     }
 }
 
@@ -1236,6 +1576,7 @@ fn albums_from_external(songs: &HashMap<String, Song>) -> Vec<Album> {
                 song.album_title.clone()
             },
             artist: song.artist.clone(),
+            artwork_url: String::new(),
             ..Album::default()
         });
     }
@@ -1423,6 +1764,8 @@ struct SubsonicAlbum {
     genre: String,
     #[serde(default)]
     year: Option<i32>,
+    #[serde(default, rename = "coverArt")]
+    cover_art: String,
     #[serde(default)]
     played: Option<Value>,
 }
@@ -1431,6 +1774,8 @@ struct SubsonicAlbum {
 struct SubsonicAlbumDetail {
     #[serde(default)]
     name: String,
+    #[serde(default, rename = "coverArt")]
+    cover_art: String,
     #[serde(default, rename = "song")]
     songs: OneOrMany<SubsonicSong>,
 }
@@ -1445,6 +1790,8 @@ struct SubsonicSong {
     artist: String,
     #[serde(default)]
     album: String,
+    #[serde(default, rename = "coverArt")]
+    cover_art: String,
     #[serde(default)]
     duration: Option<f64>,
     #[serde(default)]
@@ -1529,6 +1876,7 @@ mod tests {
             duration: 12.5,
             track_number: track,
             disc_number: 1,
+            artwork_url: String::new(),
         }
     }
 
@@ -1654,8 +2002,9 @@ mod tests {
     fn external_manifest_is_readable_and_remove_never_deletes_it() {
         let root = tempfile::tempdir().unwrap();
         let external = root.path().join("external");
-        fs::create_dir_all(&external).unwrap();
+        fs::create_dir_all(external.join("artwork")).unwrap();
         fs::write(external.join("track.flac"), b"external audio").unwrap();
+        fs::write(external.join("artwork/cover.png"), b"external artwork").unwrap();
         fs::write(
             external.join("manifest.json"),
             r#"{
@@ -1676,6 +2025,10 @@ mod tests {
                     "escape": {
                         "albumID": "album"
                     }
+                },
+                "artworkFilenamesByAlbumID": {
+                    "album": "cover.png",
+                    "escape": "../artwork/cover.png"
                 }
             }"#,
         )
@@ -1687,8 +2040,29 @@ mod tests {
         assert_eq!(library.downloaded_songs("album").len(), 1);
         assert_eq!(library.local_path("escape"), None);
         assert_eq!(library.local_path("ok"), Some(external.join("track.flac")));
+        assert_eq!(
+            library.artwork_path("album"),
+            Some(external.join("artwork/cover.png"))
+        );
+        assert_eq!(
+            library.artwork_source("album"),
+            Some(
+                external
+                    .join("artwork/cover.png")
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+        assert_eq!(library.artwork_path("escape"), None);
         library.remove("ok").unwrap();
         assert!(external.join("track.flac").is_file());
+        library
+            .save_artwork("album", b"must not replace external")
+            .unwrap();
+        assert_eq!(
+            fs::read(external.join("artwork/cover.png")).unwrap(),
+            b"external artwork"
+        );
 
         let temp = root.path().join("owned.flac");
         fs::write(&temp, b"owned audio").unwrap();
@@ -1700,12 +2074,66 @@ mod tests {
             library.local_path("ok").as_deref(),
             Some(external.join("track.flac").as_path())
         );
+        let owned_artwork = library.artwork_path("album").unwrap();
+        assert_ne!(owned_artwork, external.join("artwork/cover.png"));
+        assert_eq!(fs::read(&owned_artwork).unwrap(), b"external artwork");
+        assert_eq!(
+            library.artwork_source("album"),
+            Some(owned_artwork.to_string_lossy().into_owned())
+        );
         library.remove("ok").unwrap();
         assert_eq!(library.local_path("ok"), Some(external.join("track.flac")));
+        assert_eq!(
+            library.artwork_path("album"),
+            Some(external.join("artwork/cover.png"))
+        );
         assert_eq!(
             fs::read(external.join("track.flac")).unwrap(),
             b"external audio"
         );
+        assert_eq!(
+            fs::read(external.join("artwork/cover.png")).unwrap(),
+            b"external artwork"
+        );
+    }
+
+    #[test]
+    fn external_owned_index_artwork_is_read_only() {
+        let root = tempfile::tempdir().unwrap();
+        let external = root.path().join("external-index");
+        fs::create_dir_all(external.join("artwork")).unwrap();
+        fs::write(external.join("track.flac"), b"external audio").unwrap();
+        fs::write(external.join("artwork/cover.png"), b"external cover").unwrap();
+        let index = OwnIndex {
+            version: INDEX_VERSION,
+            songs_by_song_id: HashMap::from([(
+                "external-song".to_owned(),
+                OwnRecord {
+                    song: song("external-song", "external-album", 1),
+                    filename: "track.flac".to_owned(),
+                    artwork_filename: "cover.png".to_owned(),
+                },
+            )]),
+        };
+        fs::write(
+            external.join("index.json"),
+            serde_json::to_vec(&index).unwrap(),
+        )
+        .unwrap();
+
+        let mut cfg = test_config(root.path());
+        cfg.storage.external_dirs = vec![external.to_string_lossy().into_owned()];
+        let library = test_library(cfg, root.path()).unwrap();
+        let artwork = external.join("artwork/cover.png");
+        assert_eq!(
+            library.artwork_path("external-album"),
+            Some(artwork.clone())
+        );
+        library
+            .save_artwork("external-album", b"replacement cover")
+            .unwrap();
+        library.remove("external-song").unwrap();
+        assert_eq!(fs::read(artwork).unwrap(), b"external cover");
     }
 
     #[test]
@@ -1722,6 +2150,17 @@ mod tests {
         assert_eq!(fs::read(&path).unwrap(), b"first audio");
         assert!(library.is_owned(&track.id));
         assert!(library.cache_dir().is_dir());
+        assert_eq!(library.artwork_path("album"), None);
+
+        assert!(
+            library
+                .save_artwork("album", &vec![0; MAX_SAVED_ARTWORK_SIZE + 1])
+                .is_err()
+        );
+        library.save_artwork("album", b"owned artwork").unwrap();
+        let artwork = library.artwork_path("album").unwrap();
+        assert_eq!(artwork.extension().unwrap(), "png");
+        assert_eq!(fs::read(&artwork).unwrap(), b"owned artwork");
 
         fs::write(&temp, b"replacement audio").unwrap();
         library.save_download(&track, &temp, "mp3").unwrap();
@@ -1733,9 +2172,45 @@ mod tests {
 
         let reopened = test_library(test_config(root.path()), root.path()).unwrap();
         assert_eq!(reopened.downloaded_songs("album"), vec![track.clone()]);
+        assert_eq!(reopened.artwork_path("album"), Some(artwork.clone()));
         reopened.remove(&track.id).unwrap();
         assert_eq!(reopened.local_path(&track.id), None);
+        assert!(!artwork.exists());
         assert!(reopened.downloaded_songs("").is_empty());
+    }
+
+    #[test]
+    fn cached_artwork_is_imported_when_downloading_audio() {
+        let root = tempfile::tempdir().unwrap();
+        let library = test_library(test_config(root.path()), root.path()).unwrap();
+        let cache_artwork_dir = library.cache_dir().join("artwork");
+        fs::create_dir_all(&cache_artwork_dir).unwrap();
+        let cache_artwork = cache_artwork_dir.join(format!(
+            "{}.png",
+            hex_encode(&Sha256::digest(b"cached-album"))
+        ));
+        fs::write(&cache_artwork, b"cached cover").unwrap();
+        assert_eq!(
+            library.artwork_path("cached-album"),
+            Some(cache_artwork.clone())
+        );
+
+        let temp = root.path().join("download.flac");
+        fs::write(&temp, b"audio").unwrap();
+        library
+            .save_download(&song("cached-song", "cached-album", 1), &temp, "flac")
+            .unwrap();
+        let persisted = library.artwork_path("cached-album").unwrap();
+        assert_ne!(persisted, cache_artwork);
+        assert_eq!(fs::read(&persisted).unwrap(), b"cached cover");
+        assert!(cache_artwork.is_file());
+
+        library.remove("cached-song").unwrap();
+        assert!(!persisted.exists());
+        assert_eq!(
+            library.artwork_path("cached-album"),
+            Some(cache_artwork.clone())
+        );
     }
 
     #[test]
@@ -1792,6 +2267,92 @@ mod tests {
         cfg.server.password = "password".to_owned();
         let remote = test_library(cfg, root.path()).unwrap();
         assert_eq!(remote.albums(true).unwrap()[0].id, "remote");
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn remote_cover_ids_build_artwork_urls_and_survive_metadata_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let server = Server::http("127.0.0.1:0").unwrap();
+        let address = server.server_addr().to_ip().unwrap();
+        let handle = std::thread::spawn(move || {
+            let album_request = server.recv().unwrap();
+            assert!(album_request.url().contains("getAlbumList2.view"));
+            album_request
+                .respond(
+                    Response::from_string(
+                        r#"{"subsonic-response":{"status":"ok","albumList2":{"album":{"id":"remote","name":"Remote","coverArt":"cover-list"}}}}"#,
+                    )
+                    .with_status_code(200),
+                )
+                .unwrap();
+
+            let song_request = server.recv().unwrap();
+            assert!(song_request.url().contains("getAlbum.view"));
+            song_request
+                .respond(
+                    Response::from_string(
+                        r#"{"subsonic-response":{"status":"ok","album":{"name":"Remote","song":{"id":"song","title":"Song","album":"Remote","coverArt":"cover-song","track":1}}}}"#,
+                    )
+                    .with_status_code(200),
+                )
+                .unwrap();
+        });
+
+        let mut cfg = test_config(root.path());
+        cfg.server.url = format!("http://{address}");
+        cfg.server.username = "user".to_owned();
+        cfg.server.password = "password".to_owned();
+        let library = test_library(cfg, root.path()).unwrap();
+        let albums = library.albums(true).unwrap();
+        let songs = library.songs("remote").unwrap();
+
+        let item_id = |url: &str| {
+            Url::parse(url)
+                .unwrap()
+                .query_pairs()
+                .find(|(key, _)| key == "id")
+                .unwrap()
+                .1
+                .into_owned()
+        };
+        assert_eq!(item_id(&albums[0].artwork_url), "cover-list");
+        assert_eq!(item_id(&songs[0].artwork_url), "cover-song");
+        assert!(
+            Url::parse(&albums[0].artwork_url)
+                .unwrap()
+                .query_pairs()
+                .any(|(key, value)| key == "size" && value == "600")
+        );
+
+        let metadata: Value =
+            serde_json::from_slice(&fs::read(library.cache_dir().join("metadata.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["albums"][0]["coverArtID"], "cover-list");
+        assert_eq!(
+            metadata["songsByAlbumID"]["remote"][0]["coverArtID"],
+            "cover-song"
+        );
+
+        assert_eq!(
+            item_id(library.artwork_source("remote").as_deref().unwrap()),
+            "cover-list"
+        );
+        lock(&library.state).albums[0].cover_art_id.clear();
+        assert_eq!(
+            item_id(library.artwork_source("remote").as_deref().unwrap()),
+            "cover-song"
+        );
+        {
+            let mut state = lock(&library.state);
+            for song in state.songs.get_mut("remote").unwrap() {
+                song.cover_art_id.clear();
+            }
+        }
+        assert_eq!(
+            item_id(library.artwork_source("remote").as_deref().unwrap()),
+            "remote"
+        );
         handle.join().unwrap();
     }
 

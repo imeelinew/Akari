@@ -1,4 +1,5 @@
 mod app;
+mod artwork;
 mod config;
 mod core;
 mod library;
@@ -6,6 +7,7 @@ mod player;
 mod state;
 mod transfer;
 mod ui;
+mod visual;
 
 use anyhow::{Result, bail};
 use std::{

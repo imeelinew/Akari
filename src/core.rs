@@ -8,6 +8,8 @@ pub struct Album {
     pub artist: String,
     pub genre: String,
     pub year: i32,
+    #[serde(rename = "artworkURL")]
+    pub artwork_url: String,
     pub last_played: f64,
 }
 
@@ -23,6 +25,8 @@ pub struct Song {
     pub duration: f64,
     pub track_number: i32,
     pub disc_number: i32,
+    #[serde(rename = "artworkURL")]
+    pub artwork_url: String,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -64,11 +68,12 @@ mod tests {
     #[test]
     fn reads_go_song_format() {
         let song: Song = serde_json::from_str(
-            r#"{"id":"s","albumID":"a","albumTitle":"Album","trackNumber":3,"discNumber":2}"#,
+            r#"{"id":"s","albumID":"a","albumTitle":"Album","trackNumber":3,"discNumber":2,"artworkURL":"https://example.test/cover"}"#,
         )
         .unwrap();
         assert_eq!(song.album_id, "a");
         assert_eq!(song.track_number, 3);
+        assert_eq!(song.artwork_url, "https://example.test/cover");
         assert_eq!(serde_json::to_value(song).unwrap()["albumID"], "a");
     }
 }

@@ -7,6 +7,8 @@ description = "A Ratatui music player for macOS, Subsonic and local libraries"
 
 [dependencies]
 anyhow = "1"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif"] }
 chrono = { version = "0.4", features = ["serde"] }
 crossterm = "0.29"
 md5 = "0.7"
