@@ -4,32 +4,63 @@ mod player;
 use anyhow::Result;
 use player::{Player, Snapshot};
 
-fn write_wav(path: &std::path::Path) -> Result<()> {
+#[derive(Clone, Copy)]
+enum Encoding {
+    Pcm16,
+    Pcm24,
+    Float32,
+}
+
+fn write_wav(path: &std::path::Path, channels: u16, encoding: Encoding) -> Result<()> {
     const SAMPLE_RATE: u32 = 44_100;
     const SAMPLE_COUNT: u32 = SAMPLE_RATE * 12 / 5;
-    const CHANNELS: u16 = 1;
-    const BITS_PER_SAMPLE: u16 = 16;
-
-    let data_size = SAMPLE_COUNT * u32::from(CHANNELS) * u32::from(BITS_PER_SAMPLE / 8);
-    let mut wav = Vec::with_capacity(44 + data_size as usize);
+    let (format, bits): (u16, u16) = match encoding {
+        Encoding::Pcm16 => (1, 16),
+        Encoding::Pcm24 => (1, 24),
+        Encoding::Float32 => (3, 32),
+    };
+    let block_align = channels * (bits / 8);
+    let data_size = SAMPLE_COUNT * u32::from(block_align);
+    // WAVEFORMATEXTENSIBLE describes the six-channel speaker layout explicitly.
+    let extensible = channels > 2;
+    let fmt_size: u32 = if extensible { 40 } else { 16 };
+    let mut wav = Vec::with_capacity((28 + fmt_size + data_size) as usize);
     wav.extend_from_slice(b"RIFF");
-    wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+    wav.extend_from_slice(&(20 + fmt_size + data_size).to_le_bytes());
     wav.extend_from_slice(b"WAVEfmt ");
-    wav.extend_from_slice(&16u32.to_le_bytes());
-    wav.extend_from_slice(&1u16.to_le_bytes());
-    wav.extend_from_slice(&CHANNELS.to_le_bytes());
+    wav.extend_from_slice(&fmt_size.to_le_bytes());
+    wav.extend_from_slice(&(if extensible { 0xfffe } else { format }).to_le_bytes());
+    wav.extend_from_slice(&channels.to_le_bytes());
     wav.extend_from_slice(&SAMPLE_RATE.to_le_bytes());
-    wav.extend_from_slice(&(SAMPLE_RATE * 2).to_le_bytes());
-    wav.extend_from_slice(&2u16.to_le_bytes());
-    wav.extend_from_slice(&BITS_PER_SAMPLE.to_le_bytes());
+    wav.extend_from_slice(&(SAMPLE_RATE * u32::from(block_align)).to_le_bytes());
+    wav.extend_from_slice(&block_align.to_le_bytes());
+    wav.extend_from_slice(&bits.to_le_bytes());
+    if extensible {
+        wav.extend_from_slice(&22u16.to_le_bytes());
+        wav.extend_from_slice(&bits.to_le_bytes());
+        wav.extend_from_slice(&0x3fu32.to_le_bytes()); // FL FR FC LFE BL BR
+        wav.extend_from_slice(&u32::from(format).to_le_bytes());
+        wav.extend_from_slice(&[0, 0, 16, 0, 128, 0, 0, 170, 0, 56, 155, 113]);
+    }
     wav.extend_from_slice(b"data");
     wav.extend_from_slice(&data_size.to_le_bytes());
 
     for sample_index in 0..SAMPLE_COUNT {
-        let phase =
-            std::f64::consts::TAU * 440.0 * f64::from(sample_index) / f64::from(SAMPLE_RATE);
-        let sample = (phase.sin() * 24_000.0) as i16;
-        wav.extend_from_slice(&sample.to_le_bytes());
+        for channel in 0..channels {
+            let frequency = 440.0 + 220.0 * f64::from(channel);
+            let phase = std::f64::consts::TAU * frequency * f64::from(sample_index)
+                / f64::from(SAMPLE_RATE);
+            let sample = phase.sin() * 0.7;
+            match encoding {
+                Encoding::Pcm16 => {
+                    wav.extend_from_slice(&((sample * 32767.0) as i16).to_le_bytes())
+                }
+                Encoding::Pcm24 => {
+                    wav.extend_from_slice(&((sample * 8388607.0) as i32).to_le_bytes()[..3])
+                }
+                Encoding::Float32 => wav.extend_from_slice(&(sample as f32).to_le_bytes()),
+            }
+        }
     }
 
     std::fs::write(path, wav)?;
@@ -77,17 +108,103 @@ fn wait_for_spectrum(player: &Player, description: &str) -> Result<[f32; 32]> {
         if spectrum_peak(&spectrum) > 0.01 {
             return Ok(spectrum);
         }
-        if started.elapsed() > std::time::Duration::from_secs(5) {
+        if started.elapsed() > std::time::Duration::from_secs(15) {
             anyhow::bail!("timed out waiting for {description}; last spectrum: {spectrum:?}");
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
 
+// This exercises the real AVPlayer/tap path at volume zero, without fake levels.
+fn verify_source(path: &std::path::Path, label: &str) -> Result<()> {
+    let source = path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("source path is not UTF-8"))?;
+    let mut player = Player::new(false)?;
+    player.volume(0.0)?;
+    player.load(source, false, 0.0)?;
+    let ready = wait_for_snapshot(&player, label, |snapshot| snapshot.status != 1)?;
+    anyhow::ensure!(ready.status == 2, "{label}: load failed: {ready:?}");
+    anyhow::ensure!(ready.volume.abs() < 0.1, "{label}: playback must be muted");
+    wait_for_snapshot(&player, "playback advancing", |snapshot| {
+        snapshot.position >= 0.1
+    })?;
+    let spectrum = wait_for_spectrum(&player, label)?;
+    anyhow::ensure!(
+        spectrum
+            .iter()
+            .all(|level| level.is_finite() && (0.0..=1.0).contains(level)),
+        "{label}: invalid spectrum: {spectrum:?}"
+    );
+    let peak_band = spectrum
+        .iter()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| left.total_cmp(right))
+        .map_or(0, |(band, _)| band);
+    println!(
+        "{label}: peak={:.3} at band {peak_band}, duration={:.3}s, volume=0",
+        spectrum_peak(&spectrum),
+        ready.duration
+    );
+
+    player.pause(true)?;
+    wait_for_snapshot(&player, "pause", |snapshot| snapshot.paused)?;
+    assert_silent_spectrum(&player, label);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_silent_spectrum(&player, label);
+    player.pause(false)?;
+    wait_for_spectrum(&player, &format!("{label} resumed"))?;
+    player.stop()?;
+    assert_silent_spectrum(&player, label);
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_silent_spectrum(&player, label);
+    println!("{label}: pause/stop zero; resume restored energy");
+    Ok(())
+}
+
+fn run_format_regressions(directory: &std::path::Path) -> Result<()> {
+    for (label, channels, encoding) in [
+        ("mono-pcm16", 1, Encoding::Pcm16),
+        ("stereo-pcm16", 2, Encoding::Pcm16),
+        ("stereo-pcm24", 2, Encoding::Pcm24),
+        ("stereo-float32", 2, Encoding::Float32),
+        ("six-channel-pcm16", 6, Encoding::Pcm16),
+    ] {
+        let path = directory.join(format!("{label}.wav"));
+        write_wav(&path, channels, encoding)?;
+        verify_source(&path, label)?;
+    }
+
+    let afconvert = std::path::Path::new("/usr/bin/afconvert");
+    if afconvert.exists() {
+        let input = directory.join("stereo-pcm16.wav");
+        for (label, extension, file_format, data_format) in [
+            ("stereo-flac", "flac", "flac", "flac"),
+            ("stereo-aac", "m4a", "m4af", "aac"),
+        ] {
+            let output = directory.join(format!("{label}.{extension}"));
+            let result = std::process::Command::new(afconvert)
+                .arg(&input)
+                .arg(&output)
+                .args(["-f", file_format, "-d", data_format, "-c", "2"])
+                .output()?;
+            anyhow::ensure!(
+                result.status.success(),
+                "{label}: afconvert failed: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+            verify_source(&output, label)?;
+        }
+    } else {
+        println!("native smoke: afconvert unavailable; skipping compressed fixtures");
+    }
+    Ok(())
+}
+
 fn run_smoke() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let wav_path = directory.path().join("akari-native-smoke.wav");
-    write_wav(&wav_path)?;
+    write_wav(&wav_path, 1, Encoding::Pcm16)?;
     let source = wav_path.to_str().expect("temporary WAV path is UTF-8");
 
     let mut player = Player::new(true)?;
@@ -100,6 +217,7 @@ fn run_smoke() -> Result<()> {
     assert!((initial.volume - 70.0).abs() < 0.1);
     assert_silent_spectrum(&player, "initial state");
 
+    player.volume(0.0)?;
     player.load(source, false, 0.0)?;
     assert_eq!(player.generation(), 1);
     let ready = wait_for_snapshot(&player, "AVPlayer ready", |snapshot| snapshot.status != 1)?;
@@ -162,6 +280,7 @@ fn run_smoke() -> Result<()> {
     assert!(!player.snapshot().spatial);
     println!("native smoke: spatial disabled");
 
+    player.volume(0.0)?;
     player.pause(false)?;
     wait_for_snapshot(&player, "resume", |snapshot| !snapshot.paused)?;
     wait_for_spectrum(&player, "spectrum after resume")?;
@@ -178,6 +297,7 @@ fn run_smoke() -> Result<()> {
     println!("native smoke: stopped");
 
     let mut disposable = Player::new(false)?;
+    disposable.volume(0.0)?;
     disposable.load(source, false, 0.0)?;
     wait_for_snapshot(&disposable, "disposable player ready", |snapshot| {
         snapshot.status == 2
@@ -187,10 +307,22 @@ fn run_smoke() -> Result<()> {
         .join()
         .map_err(|_| anyhow::anyhow!("non-main-thread player destruction panicked"))?;
     println!("native smoke: active tap destroyed from a non-main thread");
+    drop(player);
+    run_format_regressions(directory.path())?;
     Ok(())
 }
 
 fn main() -> Result<()> {
+    let mut args = std::env::args_os().skip(1);
+    if let Some(option) = args.next() {
+        anyhow::ensure!(option == "--source", "usage: native_audio [--source PATH]");
+        let path = args
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("--source requires PATH"))?;
+        anyhow::ensure!(args.next().is_none(), "usage: native_audio [--source PATH]");
+        let path = std::path::PathBuf::from(path).canonicalize()?;
+        return player::run(move || verify_source(&path, "external source"));
+    }
     player::run(run_smoke)?;
 
     let panic = std::panic::catch_unwind(|| {

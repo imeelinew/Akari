@@ -390,9 +390,15 @@ static void AKTapProcess(
     uint32_t sampleBytes = (spectrum->format.mBitsPerChannel + 7) / 8;
     BOOL nonInterleaved =
         (spectrum->format.mFormatFlags & kAudioFormatFlagIsNonInterleaved) != 0;
-    uint32_t interleavedStride =
-        spectrum->format.mBytesPerFrame / spectrum->format.mChannelsPerFrame;
-    if (interleavedStride < sampleBytes) {
+    // mBytesPerFrame describes one buffer's frame. For planar PCM each
+    // buffer contains ONE channel, even though mChannelsPerFrame is stereo
+    // (or multichannel). Dividing its stride by the total channel count would
+    // reject the normal AVFoundation planar Float32 format as undersized.
+    uint32_t frameStride = spectrum->format.mBytesPerFrame;
+    uint32_t channelStride = nonInterleaved
+        ? frameStride
+        : frameStride / spectrum->format.mChannelsPerFrame;
+    if (channelStride < sampleBytes) {
         return;
     }
 
@@ -408,15 +414,18 @@ static void AKTapProcess(
             if (channels == 0 && !nonInterleaved) {
                 channels = spectrum->format.mChannelsPerFrame;
             }
-            uint32_t stride = nonInterleaved ? sampleBytes : interleavedStride;
-            size_t required = ((size_t)frame * channels + channels) * stride;
-            if (channels == 0 || required > buffer->mDataByteSize) {
+            if (channels == 0 || (nonInterleaved && channels != 1)) {
+                continue;
+            }
+            size_t frameOffset = (size_t)frame * frameStride;
+            size_t required = frameOffset + (size_t)(channels - 1) * channelStride + sampleBytes;
+            if (required > buffer->mDataByteSize) {
                 continue;
             }
             const uint8_t *data = buffer->mData;
             for (uint32_t channel = 0; channel < channels; channel++) {
                 float value;
-                size_t offset = ((size_t)frame * channels + channel) * stride;
+                size_t offset = frameOffset + (size_t)channel * channelStride;
                 if (AKReadNormalizedSample(data + offset, &spectrum->format, &value)) {
                     sum += value;
                     channelCount++;

@@ -134,6 +134,47 @@ run_case([('\r', .3), ('rr\r', 3)], repeat_one_flow, track_seconds=1)
 print('PASS repeat-one at native end of file')
 
 
+def pulse_has_bars(output, width, height):
+    """Read cursor-addressed cells, excluding block glyphs from the seek gauge."""
+    import re
+    x = y = 1
+    saved = (1, 1)
+    cells = {}
+    tokens = re.findall(rb'\x1b(?:\[[0-?]*[ -/]*[@-~]|_[^\x1b]*\x1b\\|7|8)|[^\x1b]+', output)
+    for token in tokens:
+        if token == b'\x1b7':
+            saved = (x, y)
+        elif token == b'\x1b8':
+            x, y = saved
+        elif token.startswith(b'\x1b['):
+            action = chr(token[-1])
+            values = token[2:-1].decode().split(';')
+            values = [int(v) if v.isdigit() else 0 for v in values]
+            n = values[0] or 1
+            if action in 'Hf':
+                y = n
+                x = (values[1] if len(values) > 1 else 1) or 1
+            elif action == 'C': x += n
+            elif action == 'D': x = max(1, x - n)
+            elif action == 'A': y = max(1, y - n)
+            elif action == 'B': y += n
+            elif action == 'G': x = n
+            elif action == 'd': y = n
+            elif action == 'J' and values[0] in (2, 3): cells.clear()
+        elif not token.startswith(b'\x1b'):
+            for ch in token.decode(errors='replace'):
+                if ch == '\r': x = 1
+                elif ch == '\n': y += 1
+                elif ch.isprintable():
+                    if x > width: x, y = 1, y + 1
+                    cells[x, y] = ch
+                    x += 1
+    # At 120 x 36, the right pane starts at column 73 and PULSE at row 22.
+    # Playback's progress gauge is below it and must not satisfy this assertion.
+    return any(ch in '▁▂▃▄▅▆▇█' for (x, y), ch in cells.items()
+               if x > width * .6 + 1 and height - 13 <= y < height - 7)
+
+
 def cover_and_spectrum_flow(program='kitty'):
     """Inspect actual PTY bytes: scrolling/FFT must never replay Kitty artwork."""
     import math
@@ -151,8 +192,8 @@ def cover_and_spectrum_flow(program='kitty'):
         library = root / 'external'
         library.mkdir()
         with wave.open(str(library / 'tone.wav'), 'wb') as audio:
-            audio.setparams((1, 2, 44100, 0, 'NONE', 'not compressed'))
-            cycle = b''.join(struct.pack('<h', int(16000 * math.sin(i * 2 * math.pi * 440 / 44100))) for i in range(44100))
+            audio.setparams((2, 2, 44100, 0, 'NONE', 'not compressed'))
+            cycle = b''.join(struct.pack('<hh', int(16000 * math.sin(i * 2 * math.pi * 440 / 44100)), int(12000 * math.sin(i * 2 * math.pi * 880 / 44100))) for i in range(44100))
             audio.writeframes(cycle * 30)
         (library / 'red.png').write_bytes(png([255, 0, 0]))
         (library / 'blue.png').write_bytes(png([0, 0, 255]))
@@ -201,10 +242,10 @@ def cover_and_spectrum_flow(program='kitty'):
             assert initial.count(b'a=t,t=d') == 1, 'initial cover did not upload exactly once'
             scroll = send(b'\x1b[<65;5;8M' * 8)
             assert b'\x1b_G' not in scroll, 'trackpad scroll changed Kitty image layer'
-            send(b'\r')  # Still Album 00: scrolling moved only the viewport.
+            opened = send(b'\r')  # Still Album 00: scrolling moved only the viewport.
             playing = send(b'\r', 1.8)
             no_upload(playing)
-            assert any(block.encode() in playing for block in '▁▂▃▄▅▆▇█'), 'real FFT produced no bars'
+            assert pulse_has_bars(initial + scroll + opened + playing, 120, 36), 'stereo audio produced no bars inside PULSE'
             send(b'\x1b', .3)
             blue_cover = send(b'j', .8)
             assert blue_cover.count(b'a=t,t=d') == 1, 'browsing Album 01 did not change the cover'
