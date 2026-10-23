@@ -83,6 +83,7 @@ type paintMsg int
 type actionMsg struct{ err error }
 
 type Model struct {
+	spatial                           bool
 	artRequest                        int
 	artAttempts                       int
 	artRecovery                       int
@@ -149,6 +150,7 @@ func New(lib *library.Library, p *player.Player, t *transfer.Manager) *Model {
 	if song := m.current(); song != nil {
 		m.duration = song.Duration
 	}
+	m.spatial = p.Spatial()
 	m.check(p.Volume(m.state.Volume))
 	m.theme()
 	return m
@@ -289,6 +291,7 @@ func entryID(e entry) string {
 	}
 	return ""
 }
+
 func (m *Model) syncView() {
 	if len(m.list.Items()) == 0 {
 		m.view.SetContent("")
@@ -296,6 +299,7 @@ func (m *Model) syncView() {
 		m.view.SetContent(m.list.View())
 	}
 }
+
 func (m *Model) reveal() {
 	line := m.list.Index() * 2
 	margin := min(2, max(0, (m.listH-2)/2))
@@ -304,15 +308,6 @@ func (m *Model) reveal() {
 	} else if line+2 > m.view.YOffset()+m.listH-margin {
 		m.view.SetYOffset(line + 2 - m.listH + margin)
 	}
-}
-
-// Kitty graphics scroll with the terminal. Re-place the artwork whenever the
-// list viewport moves so the cover stays anchored to the right panel.
-func (m *Model) repaintAfterViewportScroll(offset int) tea.Cmd {
-	if m.view.YOffset() == offset {
-		return nil
-	}
-	return m.paintLater()
 }
 
 func (m *Model) selectedSong() *core.Song {

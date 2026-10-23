@@ -95,6 +95,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case player.Event:
 		cmds = append(cmds, m.playerEvent())
+		if msg.Generation != 0 && msg.Generation != m.player.Generation() {
+			break
+		}
 		switch msg.Name {
 		case "time-pos":
 			if v, ok := msg.Value.(float64); ok {
@@ -107,6 +110,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "pause":
 			if v, ok := msg.Value.(bool); ok && (m.loaded || m.buffering) {
 				m.paused = v
+			}
+		case "spatial":
+			if enabled, ok := msg.Value.(bool); ok {
+				m.spatial = enabled
 			}
 		case "volume":
 			if v, ok := msg.Value.(float64); ok {
@@ -255,6 +262,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.changeVolume(5)
 		case "-":
 			m.changeVolume(-5)
+		case "o":
+			m.toggleSpatial()
 		case "s":
 			m.state.Shuffle = !m.state.Shuffle
 		case "r":
@@ -316,7 +325,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "up", "down", "j", "k", "pgup", "pgdown", "home", "end", "g", "G":
 			m.confirm = ""
-			offset := m.view.YOffset()
 			switch msg.String() {
 			case "home", "g":
 				m.list.Select(0)
@@ -329,7 +337,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.syncView()
 			m.reveal()
-			cmds = append(cmds, m.repaintAfterViewportScroll(offset))
 		}
 	case tea.MouseWheelMsg:
 		if m.volumeAt(msg.X, msg.Y) {
@@ -341,13 +348,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			break
 		}
 		if msg.Y >= 4 && msg.Y < 4+m.listH && msg.X < m.left {
-			offset := m.view.YOffset()
 			if msg.Button == tea.MouseWheelUp {
 				m.view.ScrollUp(2)
 			} else if msg.Button == tea.MouseWheelDown {
 				m.view.ScrollDown(2)
 			}
-			cmds = append(cmds, m.repaintAfterViewportScroll(offset))
 		}
 	case tea.MouseClickMsg:
 		if msg.Button == tea.MouseLeft {
@@ -510,6 +515,8 @@ func (m *Model) click(x, y int) tea.Cmd {
 				m.state.Shuffle = !m.state.Shuffle
 			case "repeat":
 				m.state.Repeat = (m.state.Repeat + 1) % 3
+			case "spatial":
+				m.toggleSpatial()
 			case "volume-down":
 				m.changeVolume(-5)
 			case "volume-up":
@@ -527,4 +534,13 @@ type coreSong = core.Song
 func (m *Model) changeVolume(delta float64) {
 	m.state.Volume = min(100, max(0, m.state.Volume+delta))
 	m.check(m.player.Volume(m.state.Volume))
+}
+
+func (m *Model) toggleSpatial() {
+	enabled := !m.spatial
+	if err := m.player.SetSpatial(enabled); err != nil {
+		m.check(err)
+		return
+	}
+	m.spatial = enabled
 }

@@ -75,7 +75,7 @@ func run() error {
 	return err
 }
 func main() {
-	if err := run(); err != nil {
+	if err := player.Run(run); err != nil {
 		fmt.Fprintln(os.Stderr, "akari:", err)
 		os.Exit(1)
 	}

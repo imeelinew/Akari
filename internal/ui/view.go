@@ -25,7 +25,7 @@ func (bindings) ShortHelp() []key.Binding {
 func (bindings) FullHelp() [][]key.Binding {
 	return [][]key.Binding{
 		{bind("↑↓ / j k", "move"), bind("enter", "open / play"), bind("esc", "back / clear"), bind("/", "search"), bind("tab / 1–4", "view")},
-		{bind("space", "play / pause"), bind("p / n", "previous / next"), bind("← →", "seek 5s"), bind("+ −", "volume"), bind("s / r", "shuffle / repeat")},
+		{bind("space", "play / pause"), bind("p / n", "previous / next"), bind("← →", "seek 5s"), bind("+ −", "volume"), bind("s / r", "shuffle / repeat"), bind("o", "spatial audio")},
 		{bind("a / N", "queue / play next"), bind("J / K", "reorder queue"), bind("c / C", "cancel / stop & clear"), bind("d / x", "download / remove"), bind("R", "refresh")},
 		{bind("click", "select"), bind("double-click", "open / play"), bind("wheel", "scroll"), bind("?", "close help"), bind("q", "quit")},
 	}
@@ -191,9 +191,14 @@ func (m *Model) controlRow() (string, []control) {
 	}
 	button(mode, "play", " ")
 	button("Prev", "prev", " ")
-	button("Next", "next", "  ")
-	button(shuffle, "shuffle", "  ")
-	button(repeat, "repeat", "  ")
+	button("Next", "next", " ")
+	button(shuffle, "shuffle", " ")
+	button(repeat, "repeat", " ")
+	spatial := "Spatial off"
+	if m.spatial {
+		spatial = "Spatial auto"
+	}
+	button(spatial, "spatial", " ")
 	button("-", "volume-down", " ")
 	fmt.Fprintf(&b, "Vol %d%% ", int(m.state.Volume))
 	button("+", "volume-up", "")

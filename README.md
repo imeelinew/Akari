@@ -1,12 +1,12 @@
 # Akari
 
-A terminal music player for macOS. Browse a Subsonic server or a local music library, stream or download tracks, and play through `mpv`.
+A terminal music player for macOS. Browse a Subsonic server or a local music library, stream or download tracks, and play through macOS AVFoundation.
 
 ## Requirements
 
 - macOS
 - Go 1.26 or newer
-- `mpv`
+- Xcode Command Line Tools (for native audio builds)
 
 ## Install
 
@@ -32,7 +32,7 @@ music_dir = "~/.local/share/akari/music"
 external_dirs = ["~/Music/Akari"]
 
 [player]
-mpv = "mpv"
+spatial_audio = true
 ```
 
 `[server]` is for a Subsonic-compatible server. `external_dirs` accepts album folders containing `manifest.json` or `index.json`.
