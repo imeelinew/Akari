@@ -45,6 +45,7 @@ func (m *Model) artwork() tea.Cmd {
 		m.artAttempts = 0
 		m.artRecovery = 0
 	}
+	m.frame.bodyDirty = true
 	m.artStatus = "Loading artwork…"
 	repaint := m.paintLater()
 	if key == "" {

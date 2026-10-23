@@ -16,6 +16,7 @@ import (
 )
 
 type cursedRenderer struct {
+	cachedRows    []string
 	images        map[uint32]string
 	imageOrder    []uint32
 	w             io.Writer
@@ -328,7 +329,7 @@ func (s *cursedRenderer) flush(closing bool) error {
 		_, _ = s.scr.WriteString(ansi.SetTabEvery8Columns)
 	}
 
-	if !s.starting && !closing && !s.pendingErase && s.lastView != nil && viewEquals(s.lastView, &view) && frameArea == s.cellbuf.Bounds() {
+	if !s.starting && !closing && !s.pendingErase && s.lastView != nil && viewEquals(s.lastView, &view) && frameArea == s.cellbuf.Bounds() && (view.Rows == nil || s.cachedRows != nil) {
 		// No changes, nothing to do.
 		return nil
 	}
@@ -353,8 +354,27 @@ func (s *cursedRenderer) flush(closing bool) error {
 
 	// Clear our screen buffer before copying the new frame into it to ensure
 	// we erase any old content.
-	s.cellbuf.Clear()
-	content.Draw(s.cellbuf, s.cellbuf.Bounds())
+	if view.Rows != nil && view.AltScreen {
+		for y := 0; y < frameArea.Dy(); y++ {
+			line := ""
+			if y < len(view.Rows) {
+				line = view.Rows[y]
+			}
+			previous := ""
+			if y < len(s.cachedRows) {
+				previous = s.cachedRows[y]
+			}
+			if !imageCleared && s.cachedRows != nil && line == previous {
+				continue
+			}
+			uv.NewStyledString(line).Draw(s.cellbuf, uv.Rect(0, y, frameArea.Dx(), 1))
+		}
+		s.cachedRows = view.Rows
+	} else {
+		s.cachedRows = nil
+		s.cellbuf.Clear()
+		content.Draw(s.cellbuf, s.cellbuf.Bounds())
+	}
 
 	// If the frame height is greater than the screen height, we drop the
 	// lines from the top of the buffer.
@@ -663,6 +683,7 @@ func (s *cursedRenderer) reset() {
 }
 
 func reset(s *cursedRenderer) {
+	s.cachedRows = nil
 	s.buf.Reset()
 	scr := uv.NewTerminalRenderer(&s.buf, s.env)
 	scr.SetColorProfile(s.profile)
@@ -772,6 +793,9 @@ func (s *cursedRenderer) setWidthMethod(method ansi.Method) {
 		// calculation to avoid issues with some terminals that might still be
 		// in Unicode mode and render characters incorrectly.
 		_, _ = s.scr.WriteString(ansi.ResetModeUnicodeCore)
+	}
+	if s.cellbuf.Method != method {
+		s.cachedRows = nil
 	}
 	s.cellbuf.Method = method
 	s.mu.Unlock()

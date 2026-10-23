@@ -54,6 +54,9 @@ func (m *Model) imageBounds() (int, int, int, int) {
 }
 
 func (m *Model) View() tea.View {
+	if !m.focused && m.frame.ready {
+		return m.frame.last
+	}
 	v := tea.NewView("")
 	v.AltScreen = true
 	v.ReportFocus = true
@@ -66,7 +69,39 @@ func (m *Model) View() tea.View {
 		v.SetContent(ansi.Truncate("Akari · resize to 40 × 16 · q quit", m.width, ""))
 		return v
 	}
-	v.Image = m.imageLayer()
+	if m.frame.bodyDirty || m.frame.lines == nil {
+		m.renderPanels()
+		m.frame.image = m.imageLayer()
+		m.frame.imageRevision = m.paint
+	} else if m.frame.imageRevision != m.paint {
+		m.frame.image = m.imageLayer()
+		m.frame.imageRevision = m.paint
+	}
+	v.Image = m.frame.image
+	if m.frame.footerDirty || m.frame.footer == nil {
+		m.renderFooter()
+	}
+	lines := append([]string(nil), m.frame.lines...)
+	if row := m.frame.spectrumRow; row >= 0 {
+		for i, line := range m.spectrumLines(m.width - m.left - 4) {
+			if row+i < len(lines) {
+				lines[row+i] = m.frame.spectrumPrefix[i] + line + m.frame.spectrumSuffix[i]
+			}
+		}
+	}
+	lines = append(lines, m.frame.footer...)
+	if len(lines) > m.height {
+		lines = lines[:m.height]
+	}
+	v.SetContent(strings.Join(lines, "\n"))
+	v.Rows = lines
+	m.frame.last = v
+	m.frame.ready = true
+	return v
+}
+
+func (m *Model) renderPanels() {
+	m.frame.spectrumRow = -1
 	muted := m.muted()
 	accent := lipgloss.NewStyle().Foreground(lipgloss.Color("62")).Bold(true)
 	tabs := []string{"Albums", "Downloaded", "Queue", "Transfers"}
@@ -134,7 +169,8 @@ func (m *Model) View() tea.View {
 			}
 			artBody += "\n" + muted.Render(ansi.Truncate(clean(detail), w, "…"))
 			if m.spectrumHeight() > 0 {
-				artBody += "\n\n" + m.spectrumView(w)
+				m.frame.spectrumRow = lipgloss.Height(artBody) + 3
+				artBody += "\n\n" + strings.Repeat(strings.Repeat(" ", w)+"\n", m.spectrumHeight()-1) + strings.Repeat(" ", w)
 			}
 		} else {
 			artBody = lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, muted.Render("Select an album"))
@@ -142,6 +178,22 @@ func (m *Model) View() tea.View {
 		right := panel.Width(max(1, m.width-m.left)).Height(max(1, m.bodyH)).Render(artBody)
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 	}
+
+	m.frame.lines = strings.Split(ansi.Truncate(top, m.width, "")+"\n"+body, "\n")
+	m.frame.spectrumPrefix = nil
+	m.frame.spectrumSuffix = nil
+	if row := m.frame.spectrumRow; row >= 0 {
+		for i := 0; i < m.spectrumHeight() && row+i < len(m.frame.lines); i++ {
+			line := m.frame.lines[row+i]
+			m.frame.spectrumPrefix = append(m.frame.spectrumPrefix, ansi.Cut(line, 0, m.left+2))
+			m.frame.spectrumSuffix = append(m.frame.spectrumSuffix, ansi.Cut(line, m.width-2, m.width))
+		}
+	}
+	m.frame.bodyDirty = false
+}
+
+func (m *Model) renderFooter() {
+	muted := m.muted()
 	track := "Nothing playing"
 	if s := m.current(); s != nil {
 		track = clean(s.Title) + " · " + clean(s.Artist)
@@ -159,9 +211,8 @@ func (m *Model) View() tea.View {
 		notice = "Press x again to remove local download"
 	}
 	footer := m.help.View(bindings{})
-	result := strings.Join([]string{ansi.Truncate(top, m.width, ""), body, player, ansi.Truncate(progress, m.width, ""), ansi.Truncate(controls, m.width, ""), muted.Render(ansi.Truncate(" "+notice, m.width, "…")), footer}, "\n")
-	v.SetContent(lipgloss.NewStyle().MaxWidth(m.width).MaxHeight(m.height).Render(result))
-	return v
+	m.frame.footer = strings.Split(strings.Join([]string{player, ansi.Truncate(progress, m.width, ""), ansi.Truncate(controls, m.width, ""), muted.Render(ansi.Truncate(" "+notice, m.width, "…")), footer}, "\n"), "\n")
+	m.frame.footerDirty = false
 }
 
 func graphicsEnabled(m *Model) bool { return artwork.Supported() && len(m.artData) > 0 && !m.showHelp }

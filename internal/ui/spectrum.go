@@ -6,22 +6,32 @@ import (
 	"strings"
 	"time"
 
+	"akari/internal/artwork"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 )
 
 type spectrumMsg time.Time
 
+type spectrumCache struct {
+	width, height int
+	palette       artwork.Palette
+	glyphs        [9]string
+	colors        []string
+}
+
 func (m *Model) spectrumTick() tea.Cmd {
-	interval := 250 * time.Millisecond
-	active := !m.paused && !m.buffering && m.spectrumHeight() > 0
+	if m.spectrumPending || !m.focused || m.spectrumHeight() == 0 || m.showHelp || m.selectedAlbum() == nil {
+		return nil
+	}
+	active := !m.paused && !m.buffering
 	for _, v := range m.spectrum {
 		active = active || v > 0
 	}
-	if active {
-		interval = time.Second / 30
+	if !active {
+		return nil
 	}
-	return tea.Tick(interval, func(t time.Time) tea.Msg { return spectrumMsg(t) })
+	m.spectrumPending = true
+	return tea.Tick(time.Second/30, func(t time.Time) tea.Msg { return spectrumMsg(t) })
 }
 func (m *Model) spectrumHeight() int {
 	if m.width < 76 || m.bodyH < 18 {
@@ -35,36 +45,50 @@ func (m *Model) spectrumReserve() int {
 	}
 	return 0
 }
-func (m *Model) spectrumView(width int) string {
+func (m *Model) spectrumLines(width int) []string {
 	height := m.spectrumHeight()
 	if height == 0 {
-		return ""
+		return nil
 	}
 	bars := min(32, max(1, width/3))
 	barWidth := max(1, (width-(bars-1))/bars)
-	padding := (width - (bars*barWidth + bars - 1)) / 2
-	var out strings.Builder
-	glyphs := []rune(" ▁▂▃▄▅▆▇█")
-	for row := 0; row < height; row++ {
-		t := float64(height-1-row) / float64(max(1, height-1))
-		c := m.spectrumColors.At(t)
-		color := fmt.Sprintf("#%02x%02x%02x", c.R, c.G, c.B)
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color(color))
+	used := bars*barWidth + bars - 1
+	padding := (width - used) / 2
+	cache := &m.spectrumPaint
+	if cache.width != width || cache.height != height || cache.palette != m.spectrumColors {
+		cache.width, cache.height, cache.palette = width, height, m.spectrumColors
+		for i, glyph := range []rune(" ▁▂▃▄▅▆▇█") {
+			cache.glyphs[i] = strings.Repeat(string(glyph), barWidth)
+		}
+		cache.colors = make([]string, height)
+		for row := range cache.colors {
+			c := m.spectrumColors.At(float64(height-1-row) / float64(max(1, height-1)))
+			cache.colors[row] = fmt.Sprintf("\x1b[38;2;%d;%d;%dm", c.R, c.G, c.B)
+		}
+	}
+	var units [32]int
+	for b := 0; b < bars; b++ {
+		level := 0.0
+		for k := b * 32 / bars; k < (b+1)*32/bars; k++ {
+			level = max(level, m.spectrum[k])
+		}
+		units[b] = int(math.Round(level * float64(height) * 8))
+	}
+	lines := make([]string, height)
+	for row := range lines {
+		var out strings.Builder
+		out.Grow(width*3 + 40)
+		out.WriteString(cache.colors[row])
 		out.WriteString(strings.Repeat(" ", padding))
 		for b := 0; b < bars; b++ {
-			level := 0.0
-			for k := b * 32 / bars; k < (b+1)*32/bars; k++ {
-				level = max(level, m.spectrum[k])
-			}
-			units := int(math.Round(level*float64(height)*8)) - 8*(height-1-row)
-			out.WriteString(style.Render(strings.Repeat(string(glyphs[max(0, min(8, units))]), barWidth)))
+			out.WriteString(cache.glyphs[max(0, min(8, units[b]-8*(height-1-row)))])
 			if b+1 < bars {
 				out.WriteByte(' ')
 			}
 		}
-		if row+1 < height {
-			out.WriteByte('\n')
-		}
+		out.WriteString(strings.Repeat(" ", width-used-padding))
+		out.WriteString("\x1b[39m")
+		lines[row] = out.String()
 	}
-	return out.String()
+	return lines
 }

@@ -82,6 +82,12 @@ func NewView(s string) View {
 // View represents a terminal view that can be composed of multiple layers.
 // It can also contain a cursor that will be rendered on top of the layers.
 type View struct {
+	// Rows optionally supplies independently styled, non-wrapping rows for an
+	// alternate-screen view. Each row must fit the screen width, reset its own
+	// ANSI state, and match Content. Treat the slice as immutable after rendering.
+	// Unchanged rows reuse their parsed cells across frames.
+	Rows []string
+
 	// Image is an optional terminal image composed after the text frame.
 	Image *ImageLayer
 	// Content is the screen content of the view. It holds styled strings that

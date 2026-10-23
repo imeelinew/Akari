@@ -14,9 +14,21 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(tea.RawMsg); ok {
 		return m, nil
 	}
+	m.frame.footerDirty = true
+	switch msg.(type) {
+	case spectrumMsg:
+		m.frame.footerDirty = false
+	case player.Event, tickMsg:
+	default:
+		m.frame.bodyDirty = true
+	}
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
 	case spectrumMsg:
+		m.spectrumPending = false
+		if !m.focused {
+			return m, nil
+		}
 		var levels [32]float64
 		if !m.paused && !m.buffering && m.spectrumHeight() > 0 {
 			levels = m.player.Spectrum()
@@ -40,7 +52,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.theme()
 		m.syncView()
 		cmds = append(cmds, m.paintLater())
+	case tea.BlurMsg:
+		m.focused = false
+		return m, nil
 	case tea.FocusMsg:
+		m.focused = true
 		m.artRecovery = 0
 		cmds = append(cmds, m.paintLater())
 	case albumsMsg:
@@ -375,6 +391,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	cmds = append(cmds, m.artwork())
+	cmds = append(cmds, m.spectrumTick())
 	return m, tea.Batch(cmds...)
 }
 
