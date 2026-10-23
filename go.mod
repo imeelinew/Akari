@@ -30,3 +30,5 @@ require (
 	github.com/xo/terminfo v1.0.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 )
+
+replace charm.land/bubbletea/v2 => ./third_party/bubbletea

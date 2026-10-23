@@ -58,7 +58,7 @@ func run() error {
 	model := ui.New(lib, p, t)
 	defer model.Close()
 	defer func() { fmt.Fprint(os.Stdout, artwork.Clear()) }()
-	program := tea.NewProgram(model)
+	program := tea.NewProgram(model, tea.WithoutScrollOptimization())
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGTERM, syscall.SIGHUP)
 	defer signal.Stop(signals)

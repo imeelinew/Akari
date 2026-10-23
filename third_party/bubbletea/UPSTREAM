@@ -1,0 +1,5 @@
+charm.land/bubbletea/v2 v2.1.0
+https://github.com/charmbracelet/bubbletea
+
+Akari patch: expose an opt-out for terminal-wide scroll optimization.
+All other renderer behavior and the upstream default remain unchanged.
