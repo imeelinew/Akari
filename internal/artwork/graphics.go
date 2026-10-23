@@ -131,7 +131,7 @@ func Clear() string {
 }
 
 func writePlacement(output *strings.Builder, imageID uint32, columns, rows int) {
-	fmt.Fprintf(output, "\x1b_Ga=p,i=%d,c=%d,r=%d,C=1,q=2,z=-1\x1b\\",
+	fmt.Fprintf(output, "\x1b_Ga=p,i=%d,p=1,c=%d,r=%d,C=1,q=1,z=-1\x1b\\",
 		imageID, columns, rows)
 }
 

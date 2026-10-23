@@ -56,6 +56,7 @@ func (m *Model) imageBounds() (int, int, int, int) {
 func (m *Model) View() tea.View {
 	v := tea.NewView("")
 	v.AltScreen = true
+	v.ReportFocus = true
 	v.MouseMode = tea.MouseModeCellMotion
 	v.WindowTitle = "Akari"
 	if m.width == 0 || m.height == 0 {
@@ -117,7 +118,10 @@ func (m *Model) View() tea.View {
 			lines := max(1, h-5)
 			placeholder := ""
 			if !graphicsEnabled(m) {
-				placeholder = "No artwork"
+				placeholder = m.artStatus
+				if placeholder == "" {
+					placeholder = "No artwork"
+				}
 			}
 			artBody += "\n" + lipgloss.Place(w, lines, lipgloss.Center, lipgloss.Center, muted.Render(placeholder))
 			detail := a.Genre

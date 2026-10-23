@@ -73,15 +73,20 @@ type songsMsg struct {
 	download bool
 }
 type artMsg struct {
-	key  string
-	data []byte
-	err  error
+	request int
+	key     string
+	data    []byte
+	err     error
 }
 type tickMsg time.Time
 type paintMsg int
 type actionMsg struct{ err error }
 
 type Model struct {
+	artRequest                        int
+	artAttempts                       int
+	artRecovery                       int
+	artRetryAt                        time.Time
 	imageOrder                        []string
 	artCancel                         context.CancelFunc
 	activeSongID                      string
@@ -499,50 +504,7 @@ func (m *Model) download() tea.Cmd {
 	}
 	return nil
 }
-func (m *Model) artwork() tea.Cmd {
-	a := m.selectedAlbum()
-	key := ""
-	source := ""
-	if a != nil {
-		key = a.ID
-		source = m.lib.ArtworkPath(a.ID)
-		if source == "" {
-			source = a.ArtworkURL
-		}
-	}
-	if key == m.artKey {
-		return nil
-	}
-	if m.artCancel != nil {
-		m.artCancel()
-		m.artCancel = nil
-	}
-	m.artKey = key
-	m.artData = nil
-	m.artStatus = ""
-	m.paint++
-	clear := tea.Raw(artwork.Delete(m.artID))
-	if key == "" {
-		return clear
-	}
-	if m.artCancel != nil {
-		m.artCancel()
-	}
-	ctx, cancel := context.WithCancel(m.ctx)
-	m.artCancel = cancel
-	return tea.Batch(clear, func() tea.Msg {
-		data, err := m.art.Load(ctx, key, source)
-		if err == nil {
-			_ = m.lib.SaveArtwork(key, data)
-		}
-		return artMsg{key, data, err}
-	})
-}
-func (m *Model) paintLater() tea.Cmd {
-	m.paint++
-	n := m.paint
-	return tea.Tick(20*time.Millisecond, func(time.Time) tea.Msg { return paintMsg(n) })
-}
+
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r < 32 || r == 127 || r >= 0x80 && r <= 0x9f {

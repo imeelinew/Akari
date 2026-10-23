@@ -1,11 +1,12 @@
 package ui
 
 import (
-	"akari/internal/artwork"
 	"akari/internal/core"
 	"akari/internal/player"
 	tea "charm.land/bubbletea/v2"
 	"fmt"
+	uv "github.com/charmbracelet/ultraviolet"
+	"strings"
 	"time"
 )
 
@@ -16,16 +17,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.artRecovery = 0
 		m.width, m.height = msg.Width, msg.Height
 		m.resize()
-		cmds = append(cmds, tea.Raw(artwork.Clear()))
-		m.imageIDs = map[string]uint32{}
-		m.imageOrder = nil
 		cmds = append(cmds, m.paintLater())
 	case tea.BackgroundColorMsg:
 		m.dark = msg.IsDark()
 		m.theme()
 		m.syncView()
+		cmds = append(cmds, m.paintLater())
+	case tea.FocusMsg:
+		m.artRecovery = 0
+		cmds = append(cmds, m.paintLater())
 	case albumsMsg:
 		m.loading = false
 		if len(msg.albums) > 0 {
@@ -51,46 +54,44 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reveal()
 		}
 	case artMsg:
-		if msg.key == m.artKey {
+		if msg.request == m.artRequest && msg.key == m.artKey {
 			m.artData = msg.data
+			m.artRetryAt = time.Time{}
 			if msg.err != nil {
-				m.artStatus = "No artwork"
+				m.artStatus = "Artwork unavailable"
+				m.artAttempts++
+				if m.artAttempts < 3 {
+					m.artRetryAt = time.Now().Add(time.Duration(m.artAttempts) * time.Second)
+				}
+			} else {
+				m.artStatus = ""
 			}
 			cmds = append(cmds, m.paintLater())
 		}
 	case paintMsg:
-		if int(msg) != m.paint || len(m.artData) == 0 || m.width < 76 || m.showHelp || !artwork.Supported() {
+		if int(msg) != m.paint {
 			return m, nil
 		}
-		col, row, w, h := m.imageBounds()
-		if h < 2 || w < 2 {
-			return m, nil
-		}
-		id, ok := m.imageIDs[m.artKey]
-		var seq string
-		if !ok {
-			if len(m.imageOrder) >= 32 {
-				old := m.imageOrder[0]
-				m.imageOrder = m.imageOrder[1:]
-				seq += artwork.Forget(m.imageIDs[old])
-				delete(m.imageIDs, old)
-			}
-			m.imageNext++
-			id = m.imageNext
-			m.imageIDs[m.artKey] = id
-			seq += artwork.Render(m.artData, id, col, row, w, h)
-		} else {
-			seq = artwork.Place(id, col, row, w, h)
-		}
-		for i, k := range m.imageOrder {
-			if k == m.artKey {
-				m.imageOrder = append(m.imageOrder[:i], m.imageOrder[i+1:]...)
-				break
+		return m, tea.Raw(artworkFrame{m, int(msg)})
+	case uv.KittyGraphicsEvent:
+		if strings.HasPrefix(string(msg.Payload), "ENOENT") {
+			id := uint32(msg.Options.ID)
+			for key, cached := range m.imageIDs {
+				if cached == id {
+					delete(m.imageIDs, key)
+					m.dropImageOrder(key)
+					if key == m.artKey {
+						m.artRecovery++
+						if m.artRecovery > 2 {
+							m.artData = nil
+							m.artStatus = "Artwork unavailable"
+						}
+						cmds = append(cmds, m.paintLater())
+					}
+					break
+				}
 			}
 		}
-		m.imageOrder = append(m.imageOrder, m.artKey)
-		m.artID = id
-		return m, tea.Raw(seq)
 
 	case player.Event:
 		cmds = append(cmds, m.playerEvent())
@@ -185,11 +186,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			m.showHelp = !m.showHelp
 			m.resize()
-			if m.showHelp {
-				cmds = append(cmds, tea.Raw(artwork.Delete(m.artID)))
-			} else {
-				cmds = append(cmds, m.paintLater())
-			}
+			cmds = append(cmds, m.paintLater())
 		case "/":
 			m.filtering = true
 			cmds = append(cmds, m.search.Focus())
