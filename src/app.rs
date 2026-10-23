@@ -89,6 +89,7 @@ pub struct App {
     songs: Vec<Song>,
     pub entries: Vec<Entry>,
     pub table: TableState,
+    pub follow_selection: bool,
     pub query: String,
     pub filtering: bool,
     pub help: bool,
@@ -135,6 +136,7 @@ impl App {
             songs: vec![],
             entries: vec![],
             table: TableState::default(),
+            follow_selection: true,
             query: String::new(),
             filtering: false,
             help: false,
@@ -438,6 +440,7 @@ impl App {
         self.table.selected().and_then(|i| self.entries.get(i))
     }
     fn set_page(&mut self, page: usize) {
+        self.follow_selection = true;
         self.page = page;
         self.album = None;
         self.songs.clear();
@@ -451,6 +454,7 @@ impl App {
         self.sync_entries();
     }
     fn activate(&mut self) {
+        self.follow_selection = true;
         self.last_click = None;
         match self.selected().cloned() {
             Some(Entry::Album(a)) => {
@@ -716,6 +720,7 @@ impl App {
         }
     }
     fn move_queue(&mut self, down: bool) {
+        self.follow_selection = true;
         if self.page != 2 {
             return;
         }
@@ -743,6 +748,7 @@ impl App {
         }
     }
     fn navigate(&mut self, delta: isize) {
+        self.follow_selection = true;
         if self.entries.is_empty() {
             return;
         }
@@ -760,6 +766,7 @@ impl App {
             return true;
         }
         if self.filtering {
+            self.follow_selection = true;
             match k.code {
                 KeyCode::Enter => self.filtering = false,
                 KeyCode::Esc => {
@@ -811,9 +818,11 @@ impl App {
             KeyCode::Esc => {
                 self.confirm.clear();
                 if !self.query.is_empty() {
+                    self.follow_selection = true;
                     self.query.clear();
                     self.sync_entries();
                 } else if let Some(a) = self.album.take() {
+                    self.follow_selection = true;
                     self.request_generation += 1;
                     self.loading = false;
                     self.sync_entries();
@@ -902,7 +911,17 @@ impl App {
                 if self.regions.volume.contains(pos) {
                     self.volume(if up { 5. } else { -5. });
                 } else if self.regions.table.contains(pos) {
-                    self.navigate(if up { -2 } else { 2 });
+                    let visible = self.regions.table.height.saturating_sub(3) as usize;
+                    if visible > 0 {
+                        let offset =
+                            self.table
+                                .offset()
+                                .saturating_add_signed(if up { -2 } else { 2 });
+                        *self.table.offset_mut() =
+                            offset.min(self.entries.len().saturating_sub(visible));
+                        self.follow_selection = false;
+                        self.last_click = None;
+                    }
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
@@ -941,6 +960,7 @@ impl App {
                     if i < self.entries.len() {
                         self.confirm.clear();
                         self.table.select(Some(i));
+                        self.follow_selection = true;
                         let double = self.last_click.is_some_and(|(last, t)| {
                             last == i && t.elapsed() < Duration::from_millis(400)
                         });

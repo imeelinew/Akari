@@ -5,7 +5,10 @@ use ratatui::{
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, BorderType, Clear, Gauge, Paragraph, Row, Table, Tabs, Wrap},
+    widgets::{
+        Block, BorderType, Clear, Gauge, HighlightSpacing, Paragraph, Row, Table, TableState, Tabs,
+        Wrap,
+    },
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -191,7 +194,8 @@ fn library(frame: &mut Frame, app: &mut App, area: Rect) {
         Constraint::Length(if album_rows { 9 } else { 6 }),
         Constraint::Length(if app.page == 3 { 22 } else { 8 }),
     ];
-    frame.render_stateful_widget(
+    render_library_table(
+        frame,
         Table::new(rows, widths)
             .block(block)
             .header(
@@ -209,7 +213,36 @@ fn library(frame: &mut Frame, app: &mut App, area: Rect) {
             .highlight_symbol("› "),
         area,
         &mut app.table,
+        app.follow_selection,
+        app.entries.len(),
     );
+}
+
+fn render_library_table(
+    frame: &mut Frame,
+    table: Table<'_>,
+    area: Rect,
+    state: &mut TableState,
+    follow_selection: bool,
+    row_count: usize,
+) {
+    let selected = state.selected();
+    if !follow_selection {
+        // One header row and two borders; library rows are one terminal line each.
+        let visible = area.height.saturating_sub(3) as usize;
+        let offset = state.offset().min(row_count.saturating_sub(visible));
+        *state.offset_mut() = offset;
+        if selected.is_some_and(|index| index < offset || index >= offset + visible) {
+            // Ratatui otherwise scrolls back to the selected row during rendering.
+            *state.selected_mut() = None;
+        }
+    }
+    frame.render_stateful_widget(
+        table.highlight_spacing(HighlightSpacing::Always),
+        area,
+        state,
+    );
+    *state.selected_mut() = selected;
 }
 fn player(frame: &mut Frame, app: &mut App, area: Rect) {
     let mode = if app.buffering {
@@ -363,6 +396,65 @@ fn help(frame: &mut Frame, area: Rect, scroll: u16) {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    fn draw_scrolled_table(
+        terminal: &mut Terminal<TestBackend>,
+        state: &mut TableState,
+        follow: bool,
+    ) {
+        terminal
+            .draw(|frame| {
+                let rows = (0..20).map(|i| Row::new([format!("Track {i:02}")]));
+                let table = Table::new(rows, [Constraint::Min(1)])
+                    .block(Block::bordered())
+                    .header(Row::new(["Tracks"]))
+                    .highlight_symbol("› ");
+                render_library_table(frame, table, frame.area(), state, follow, 20);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn viewport_scroll_preserves_selection_across_redraws() {
+        let mut terminal = Terminal::new(TestBackend::new(30, 8)).unwrap();
+        let mut state = TableState::default().with_selected(Some(0)).with_offset(8);
+        for _ in 0..3 {
+            draw_scrolled_table(&mut terminal, &mut state, false);
+            assert_eq!(state.selected(), Some(0));
+            assert_eq!(state.offset(), 8);
+            let text = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(text.contains("Track 08"));
+            assert!(!text.contains("Track 00"));
+            assert!(!text.contains('›'));
+        }
+        // Keyboard navigation returns to the retained selection, not the viewport's top row.
+        state.select(Some(1));
+        draw_scrolled_table(&mut terminal, &mut state, true);
+        assert_eq!(state.selected(), Some(1));
+        assert!(state.offset() <= 1);
+    }
+
+    #[test]
+    fn viewport_keeps_visible_highlight_and_clamps_after_resize() {
+        let mut terminal = Terminal::new(TestBackend::new(30, 8)).unwrap();
+        let mut state = TableState::default()
+            .with_selected(Some(18))
+            .with_offset(usize::MAX);
+        draw_scrolled_table(&mut terminal, &mut state, false);
+        assert_eq!(state.offset(), 15);
+        assert_eq!(state.selected(), Some(18));
+        assert_eq!(terminal.backend().buffer()[(1, 5)].symbol(), "›");
+        terminal.backend_mut().resize(30, 12);
+        draw_scrolled_table(&mut terminal, &mut state, false);
+        assert_eq!(state.offset(), 11);
+        assert_eq!(state.selected(), Some(18));
+    }
     #[test]
     fn help_renders_at_minimum_and_normal_sizes() {
         for (w, h) in [(40, 16), (100, 32)] {

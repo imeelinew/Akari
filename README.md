@@ -68,7 +68,7 @@ Existing Go-version configuration, namespaced download indexes, metadata caches,
 | `?` | Full key map |
 | `q` / `ctrl-c` | Save and quit |
 
-Mouse: click to select, double-click to open or play, scroll to move, click the progress bar to seek, and click player controls. Scrolling over volume adjusts it. The interface needs at least 40 × 16 terminal cells.
+Mouse: click to select, double-click to open or play, scroll the viewport without changing the selection, click the progress bar to seek, and click player controls. Scrolling over volume adjusts it. The interface needs at least 40 × 16 terminal cells.
 
 ## Development
 
