@@ -63,14 +63,16 @@ Existing Go-version configuration, namespaced download indexes, metadata caches,
 | `C` | Stop playback and clear queue |
 | `s` / `r` | Shuffle / repeat off, all, one |
 | `o` | Toggle automatic spatial audio |
-| `+` / `-` | Volume |
+| `+` / `=` / `-` | Volume up / down |
 | `R` | Refresh catalog |
 | `?` | Full key map |
 | `q` / `ctrl-c` | Save and quit |
 
+After a track has started, `p` returns to the beginning when the position is past 3 seconds. Otherwise, including before playback starts, `p` selects the previous track.
+
 Mouse: click to select, double-click to open or play, scroll the viewport without changing the selection, click the progress bar to seek, and click player controls. Scrolling over volume adjusts it. The interface needs at least 40 × 16 terminal cells.
 
-The middle area splits into a library on the left, Kitty-protocol **COVER** artwork above **PULSE** on the right (76 columns or wider). PULSE shows a smoothed 32-band spectrum from the actual audio. Both the spectrum and playback bar take their colors from the playing album, independently of the browsed cover. Scrolling changes only the library viewport; it does not move or retransmit artwork.
+When the terminal is at least 76 columns wide, the middle area splits into a library on the left and Kitty-protocol **COVER** artwork above **PULSE** on the right. Narrower terminals show only the library. PULSE shows a smoothed 32-band spectrum from the actual audio. Both the spectrum and playback bar take their colors from the playing album, independently of the browsed cover. Scrolling changes only the library viewport; it does not move or retransmit artwork.
 
 Normalized covers use a 64-image memory LRU and a disk cache, with 32 uploaded images retained in the terminal. A single worker coalesces artwork requests. Library rows, playback panels, and spectrum colors stay cached between animation frames; spectrum updates stop while hidden or unfocused.
 
