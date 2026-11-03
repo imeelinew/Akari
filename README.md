@@ -49,8 +49,10 @@ Existing Go-version configuration, namespaced download indexes, metadata caches,
 | Key | Action |
 | --- | --- |
 | `1`–`4` / `tab` / `shift-tab` | Albums, Downloaded, Queue, Transfers |
-| `j` / `k` / arrows | Move |
-| `g` / `G` / page up / page down | First, last, page |
+| `j` / `k` / up / down | Move |
+| `g` / `home` | First |
+| `G` / `end` | Last |
+| page up / page down | One page |
 | `enter` / `esc` | Open or play / back or clear |
 | `space` | Play or pause; retry failed playback |
 | `p` / `n` | Previous or next |

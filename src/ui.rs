@@ -542,6 +542,8 @@ fn help(frame: &mut Frame, area: Rect, scroll: u16) {
     let lines = vec![
         Line::from(" Browse").fg(ACCENT).bold(),
         Line::from(" ↑ ↓ / j k    Move           enter       Open / play"),
+        Line::from(" g / home     First          G / end     Last"),
+        Line::from(" pgup / pgdn  Page           shift-tab   Previous view"),
         Line::from(" 1–4 / tab    Switch view    esc         Back / clear"),
         Line::from(" /            Search         R           Refresh"),
         Line::from(""),
@@ -643,6 +645,13 @@ mod tests {
                 .map(|c| c.symbol())
                 .collect::<String>();
             assert!(text.contains("Help ·"));
+            assert!(text.contains("g / home"));
+            assert!(text.contains("pgup / pgdn"));
+            assert!(text.contains("shift-tab"));
+            assert!(text.contains("Last"));
+            if w >= 80 {
+                assert!(text.contains("G / end"));
+            }
         }
     }
 }
